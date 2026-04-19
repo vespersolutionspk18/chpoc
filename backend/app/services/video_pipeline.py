@@ -190,7 +190,11 @@ class VideoPipeline:
     # ------------------------------------------------------------------
 
     async def ensure_cameras_exist(self) -> list[dict]:
-        """Ensure demo cameras exist in the DB, return list of camera info dicts."""
+        """Ensure demo cameras exist in the DB, return list of camera info dicts.
+
+        Uses the actual database UUID as the camera key everywhere (Redis, tracker, etc.)
+        so that the frontend can look up detection data by camera UUID directly.
+        """
         cameras_info = []
         async with self.db_factory() as session:
             result = await session.execute(select(CameraModel))
@@ -198,7 +202,7 @@ class VideoPipeline:
 
             if existing:
                 for cam in existing:
-                    cam_key = f"cam-{len(cameras_info)+1:03d}"
+                    cam_key = str(cam.id)  # Use UUID as the key
                     cameras_info.append({
                         "key": cam_key,
                         "id": cam.id,
@@ -209,7 +213,6 @@ class VideoPipeline:
             else:
                 # Create default cameras
                 for i, cfg in enumerate(DEFAULT_CAMERAS):
-                    cam_key = f"cam-{i+1:03d}"
                     cam = CameraModel(
                         id=uuid.uuid4(),
                         name=cfg["name"],
@@ -220,6 +223,7 @@ class VideoPipeline:
                         status=CameraStatus.ONLINE,
                     )
                     session.add(cam)
+                    cam_key = str(cam.id)
                     cameras_info.append({
                         "key": cam_key,
                         "id": cam.id,
@@ -532,7 +536,13 @@ class VideoPipeline:
 
     def _init_scene(self, camera_id: str) -> dict:
         """Create persistent scene objects for a camera simulation."""
-        cam_num = int(camera_id.split("-")[-1]) if "-" in camera_id else 1
+        # Camera ID is now a UUID string. Extract a stable number from it.
+        # For deterministic UUIDs like "00000000-0000-4000-8000-000000000001" the
+        # last segment gives us 1-16.  For random UUIDs we hash to get a number.
+        try:
+            cam_num = int(camera_id.split("-")[-1]) or 1
+        except (ValueError, IndexError):
+            cam_num = hash(camera_id) % 5 + 1
         base_people = [8, 12, 5, 10, 3][min(cam_num - 1, 4)]
         base_vehicles = [4, 2, 1, 8, 2][min(cam_num - 1, 4)]
 
@@ -609,7 +619,10 @@ class VideoPipeline:
                 scene[category].pop(i)
 
             # Occasionally spawn new objects
-            cam_num = int(camera_id.split("-")[-1]) if "-" in camera_id else 1
+            try:
+                cam_num = int(camera_id.split("-")[-1]) or 1
+            except (ValueError, IndexError):
+                cam_num = hash(camera_id) % 5 + 1
             if category == "people" and random.random() < 0.08:
                 scene["people"].append({
                     "x": random.choice([0, 1920]) + random.gauss(0, 50),

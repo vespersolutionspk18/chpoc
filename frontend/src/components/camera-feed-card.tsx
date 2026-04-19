@@ -1,9 +1,12 @@
 "use client";
 
+import { useState } from "react";
 import type { Camera, Detection } from "@/lib/types";
 import { StatusDot } from "@/components/status-dot";
 import { DetectionOverlay } from "@/components/detection-overlay";
 import { cn } from "@/lib/utils";
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 interface CameraFeedCardProps {
   camera: Camera;
@@ -18,6 +21,8 @@ export function CameraFeedCard({
   onClick,
   compact = false,
 }: CameraFeedCardProps) {
+  const [streamError, setStreamError] = useState(false);
+
   return (
     <div
       onClick={() => onClick?.(camera)}
@@ -29,26 +34,39 @@ export function CameraFeedCard({
         onClick && "cursor-pointer"
       )}
     >
-      {/* Camera feed area — aspect-video fills parent width */}
+      {/* Camera feed area -- aspect-video fills parent width */}
       <div className="relative aspect-video w-full overflow-hidden">
         {/* Subtle grid-lines pattern overlay */}
         <div className="grid-lines pointer-events-none absolute inset-0 z-20 opacity-30" />
 
-        {/* Dark gradient background simulating camera feed */}
-        <div className="absolute inset-0 bg-gradient-to-b from-[#0a1525]/60 to-[#060d1a]/80" />
-
-        {/* Detection overlay — fills parent via absolute positioning */}
-        {detections && detections.length > 0 && (
-          <DetectionOverlay
-            detections={detections}
-            width={640}
-            height={360}
+        {/* MJPEG video stream -- bounding boxes are drawn server-side */}
+        {!streamError ? (
+          <img
+            src={`${API_URL}/api/stream/${camera.id}`}
+            alt={camera.name}
+            className="absolute inset-0 w-full h-full object-cover"
+            loading="lazy"
+            onError={() => setStreamError(true)}
           />
+        ) : (
+          <>
+            {/* Fallback: dark gradient background when stream is unavailable */}
+            <div className="absolute inset-0 bg-gradient-to-b from-[#0a1525]/60 to-[#060d1a]/80" />
+
+            {/* Fallback SVG detection overlay */}
+            {detections && detections.length > 0 && (
+              <DetectionOverlay
+                detections={detections}
+                width={640}
+                height={360}
+              />
+            )}
+          </>
         )}
 
         {/* Top-left: camera name */}
         <div className="absolute left-2 top-2 z-30">
-          <span className="font-data text-xs text-[#00f0ff]/80">
+          <span className="font-data text-xs text-[#00f0ff]/80 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
             {camera.name}
           </span>
         </div>
@@ -77,7 +95,7 @@ export function CameraFeedCard({
 
         {/* Bottom-center: camera ID */}
         <div className="absolute bottom-2 left-1/2 z-30 -translate-x-1/2">
-          <span className="font-data text-[10px] text-[#4a6a8a]">
+          <span className="font-data text-[10px] text-[#4a6a8a] drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
             {camera.id}
           </span>
         </div>
