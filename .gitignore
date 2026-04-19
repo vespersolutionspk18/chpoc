@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+
+# Node
+node_modules/
+.next/
+out/
+
+# Data
+test-data/
+*.mp4
+*.avi
+*.mkv
+
+# Models (never commit model weights)
+*.pt
+*.pth
+*.onnx
+*.engine
+*.bin
+/models/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Graphify output
+graphify-out/
+
+# Vast
+vast
+
+# Claude
+.claude/
