@@ -20,37 +20,32 @@ router = APIRouter(prefix="/frames", tags=["frames"])
 @router.get("/")
 async def get_all_frames(r: aioredis.Redis = Depends(get_redis)):
     """Get latest detection data for all active cameras."""
+    # Scan for frame:* keys in Redis
+    camera_ids: list[str] = []
     try:
-        # Get set of active cameras
-        active_cameras = await r.smembers("active_cameras")
+        cursor = 0
+        while True:
+            cursor, keys = await r.scan(cursor, match="frame:*", count=100)
+            for k in keys:
+                key_str = k.decode() if isinstance(k, bytes) else k
+                cam_id = key_str.replace("frame:", "")
+                camera_ids.append(cam_id)
+            if cursor == 0:
+                break
     except Exception:
-        active_cameras = set()
+        return {}
 
-    if not active_cameras:
-        # Fallback: scan for frame:* keys
-        try:
-            cursor = 0
-            active_cameras = set()
-            while True:
-                cursor, keys = await r.scan(cursor, match="frame:*", count=100)
-                for k in keys:
-                    cam_id = k.replace("frame:", "")
-                    active_cameras.add(cam_id)
-                if cursor == 0:
-                    break
-        except Exception:
-            return {"cameras": {}, "count": 0}
-
-    frames = {}
-    for cam_id in active_cameras:
+    frames: dict = {}
+    for cam_id in camera_ids:
         try:
             data = await r.get(f"frame:{cam_id}")
             if data:
-                frames[cam_id] = json.loads(data)
+                raw = data.decode() if isinstance(data, bytes) else data
+                frames[cam_id] = json.loads(raw)
         except Exception:
             continue
 
-    return {"cameras": frames, "count": len(frames)}
+    return frames
 
 
 @router.get("/stats")
@@ -92,4 +87,5 @@ async def get_camera_frame(camera_id: str, r: aioredis.Redis = Depends(get_redis
     if not data:
         raise HTTPException(status_code=404, detail=f"No frame data for camera {camera_id}")
 
-    return json.loads(data)
+    raw = data.decode() if isinstance(data, bytes) else data
+    return json.loads(raw)
