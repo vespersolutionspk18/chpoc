@@ -68,15 +68,28 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS
+# CORS — allow all origins for POC
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Content-Range", "Accept-Ranges", "Content-Length"],
 )
+
+# Catch-all exception handler so CORS headers are always present on errors
+from fastapi.responses import JSONResponse
+from starlette.requests import Request as StarletteRequest
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: StarletteRequest, exc: Exception):
+    logger.error("Unhandled error: %s", exc)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": str(exc)},
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
 
 # Static files for thumbnails/crops
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
