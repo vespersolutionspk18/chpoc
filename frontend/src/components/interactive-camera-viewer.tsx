@@ -14,19 +14,61 @@ interface Detection {
   bbox: { x: number; y: number; w: number; h: number };
 }
 
+interface PersonAttributes {
+  gender: string;
+  gender_confidence: number;
+  age_group: string;
+  age_confidence: number;
+  clothing_upper: string;
+  clothing_upper_color: string;
+  clothing_lower: string;
+  clothing_lower_color: string;
+  headwear: string;
+  headwear_confidence: number;
+  footwear: string;
+  eyewear: string;
+  facial_hair: string;
+  carrying: string;
+  bag: boolean;
+  backpack: boolean;
+  build: string;
+  clothing_style: string;
+}
+
+interface VehicleAttributes {
+  vehicle_type: string;
+  vehicle_type_confidence: number;
+  color: string;
+  color_confidence: number;
+  make: string;
+  make_confidence: number;
+  condition: string;
+  condition_confidence: number;
+  direction: string;
+  occupants: string;
+  lights: string;
+  damage_visible: boolean;
+  modifications: string;
+  vehicle_class: string;
+}
+
 interface AnalysisResult {
   type: string;
+  person_image_b64?: string;
   face?: {
     face_bbox: { x: number; y: number; w: number; h: number };
     quality_score: number;
     embedding: number[] | null;
   } | null;
+  face_image_b64?: string | null;
+  vehicle_image_b64?: string;
   plate?: {
     plate_text: string;
     confidence: number;
     plate_bbox: { x: number; y: number; w: number; h: number };
+    plate_image_b64?: string | null;
   } | null;
-  attributes: Record<string, unknown>;
+  attributes: PersonAttributes | VehicleAttributes | Record<string, unknown>;
 }
 
 interface Props {
@@ -345,30 +387,123 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
                 </div>
               )}
 
-              {analysis && (
+              {analysis && analysis.type === "person" && (
                 <div className="space-y-3">
                   <div className="h-px bg-gradient-to-r from-[#00f0ff]/30 to-transparent" />
 
+                  {/* Person + Face images */}
+                  <div className="flex gap-2">
+                    {analysis.person_image_b64 && (
+                      <div className="flex-1 space-y-1">
+                        <span className="font-heading text-[7px] uppercase tracking-[0.2em] text-[#4a6a8a]">PERSON CROP</span>
+                        <img
+                          src={`data:image/jpeg;base64,${analysis.person_image_b64}`}
+                          alt="Person crop"
+                          className="w-full rounded-sm border border-[#00f0ff]/20 object-contain max-h-48"
+                        />
+                      </div>
+                    )}
+                    {analysis.face_image_b64 && (
+                      <div className="w-24 shrink-0 space-y-1">
+                        <span className="font-heading text-[7px] uppercase tracking-[0.2em] text-[#4a6a8a]">FACE</span>
+                        <img
+                          src={`data:image/jpeg;base64,${analysis.face_image_b64}`}
+                          alt="Face crop"
+                          className="w-full rounded-sm border border-[#00ff88]/20 object-contain max-h-32"
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Face info */}
                   {analysis.face && (
                     <div className="space-y-2">
                       <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#00ff88]">FACE DETECTED</h4>
                       <div className="grid grid-cols-2 gap-2">
                         <Cell label="QUALITY" value={`${(analysis.face.quality_score * 100).toFixed(0)}%`} />
                         <Cell label="EMBEDDING" value={analysis.face.embedding ? `${analysis.face.embedding.length}-d vector` : "N/A"} />
-                        <Cell label="FACE POS" value={`${Math.round(analysis.face.face_bbox.x)}, ${Math.round(analysis.face.face_bbox.y)}`} />
-                        <Cell label="FACE SIZE" value={`${Math.round(analysis.face.face_bbox.w)} x ${Math.round(analysis.face.face_bbox.h)}`} />
                       </div>
                       {analysis.face.embedding && (
                         <p className="font-data text-[9px] text-[#4a6a8a]">
-                          512-d face embedding captured — searchable across all cameras
+                          512-d face embedding captured -- searchable across all cameras
                         </p>
                       )}
                     </div>
                   )}
 
-                  {analysis.plate && (
+                  {!analysis.face && (
+                    <p className="py-2 text-center font-data text-xs text-[#4a6a8a]">
+                      No face detected -- person may be facing away or occluded
+                    </p>
+                  )}
+
+                  {/* Person attributes */}
+                  {analysis.attributes && Object.keys(analysis.attributes).length > 0 && (() => {
+                    const attrs = analysis.attributes as PersonAttributes;
+                    return (
+                      <div className="space-y-2">
+                        <div className="h-px bg-gradient-to-r from-[#00f0ff]/20 to-transparent" />
+                        <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#00f0ff]">ATTRIBUTES</h4>
+                        <div className="grid grid-cols-2 gap-2">
+                          <Cell label="GENDER" value={`${attrs.gender} (${(attrs.gender_confidence * 100).toFixed(0)}%)`} />
+                          <Cell label="AGE GROUP" value={attrs.age_group?.replace(/_/g, " ") ?? "N/A"} />
+                          <Cell label="UPPER CLOTHING" value={attrs.clothing_upper?.replace(/_/g, " ") ?? "N/A"} />
+                          <Cell label="UPPER COLOR" value={attrs.clothing_upper_color ?? "N/A"} />
+                          <Cell label="LOWER CLOTHING" value={attrs.clothing_lower?.replace(/_/g, " ") ?? "N/A"} />
+                          <Cell label="LOWER COLOR" value={attrs.clothing_lower_color ?? "N/A"} />
+                          <Cell label="HEADWEAR" value={`${attrs.headwear ?? "N/A"} (${(attrs.headwear_confidence * 100).toFixed(0)}%)`} />
+                          <Cell label="EYEWEAR" value={attrs.eyewear?.replace(/_/g, " ") ?? "N/A"} />
+                          <Cell label="FACIAL HAIR" value={attrs.facial_hair?.replace(/_/g, " ") ?? "N/A"} />
+                          <Cell label="CARRYING" value={attrs.carrying?.replace(/_/g, " ") ?? "N/A"} />
+                          <Cell label="BUILD" value={attrs.build ?? "N/A"} />
+                          <Cell label="CLOTHING STYLE" value={attrs.clothing_style?.replace(/_/g, " ") ?? "N/A"} />
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  <div className="h-px bg-gradient-to-r from-[#00f0ff]/20 to-transparent" />
+                  <div className="space-y-2">
+                    <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#4a6a8a]">SOURCE CAMERA</h4>
+                    <div className="grid grid-cols-2 gap-2">
+                      <Cell label="CAMERA" value={camera.name} />
+                      <Cell label="ZONE" value={camera.zone_id ?? "N/A"} />
+                      <Cell label="STATUS" value={camera.status.toUpperCase()} />
+                      <Cell label="LOCATION" value={`${camera.location_lat.toFixed(4)}, ${camera.location_lng.toFixed(4)}`} />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {analysis && analysis.type === "vehicle" && (
+                <div className="space-y-3">
+                  <div className="h-px bg-gradient-to-r from-[#00ff88]/30 to-transparent" />
+
+                  {/* Vehicle image */}
+                  {analysis.vehicle_image_b64 && (
+                    <div className="space-y-1">
+                      <span className="font-heading text-[7px] uppercase tracking-[0.2em] text-[#4a6a8a]">VEHICLE CROP</span>
+                      <img
+                        src={`data:image/jpeg;base64,${analysis.vehicle_image_b64}`}
+                        alt="Vehicle crop"
+                        className="w-full rounded-sm border border-[#00ff88]/20 object-contain max-h-48"
+                      />
+                    </div>
+                  )}
+
+                  {/* Plate section */}
+                  {analysis.plate && analysis.plate.plate_text && (
                     <div className="space-y-2">
                       <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#00ff88]">LICENSE PLATE</h4>
+                      {analysis.plate.plate_image_b64 && (
+                        <div className="space-y-1">
+                          <img
+                            src={`data:image/jpeg;base64,${analysis.plate.plate_image_b64}`}
+                            alt="Plate crop"
+                            className="mx-auto max-w-full rounded-sm border border-[#00ff88]/20 object-contain max-h-20"
+                          />
+                        </div>
+                      )}
                       <div className="rounded-sm border border-[#00ff88]/20 bg-[#00ff88]/5 p-3 text-center">
                         <span className="font-data text-2xl tracking-wider text-[#00ff88]">{analysis.plate.plate_text}</span>
                       </div>
@@ -379,13 +514,36 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
                     </div>
                   )}
 
-                  {!analysis.face && !analysis.plate && (
-                    <p className="py-4 text-center font-data text-xs text-[#4a6a8a]">
-                      {analysis.type === "person" ? "No face detected in this crop — person may be facing away or occluded" : "No license plate detected in this crop"}
+                  {(!analysis.plate || !analysis.plate.plate_text) && (
+                    <p className="py-2 text-center font-data text-xs text-[#4a6a8a]">
+                      No license plate detected in this crop
                     </p>
                   )}
 
-                  <div className="h-px bg-gradient-to-r from-[#00f0ff]/20 to-transparent" />
+                  {/* Vehicle attributes */}
+                  {analysis.attributes && Object.keys(analysis.attributes).length > 0 && (() => {
+                    const attrs = analysis.attributes as VehicleAttributes;
+                    return (
+                      <div className="space-y-2">
+                        <div className="h-px bg-gradient-to-r from-[#00ff88]/20 to-transparent" />
+                        <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#00ff88]">ATTRIBUTES</h4>
+                        <div className="grid grid-cols-2 gap-2">
+                          <Cell label="VEHICLE TYPE" value={`${attrs.vehicle_type?.replace(/_/g, " ") ?? "N/A"} (${(attrs.vehicle_type_confidence * 100).toFixed(0)}%)`} />
+                          <Cell label="COLOR" value={`${attrs.color ?? "N/A"} (${(attrs.color_confidence * 100).toFixed(0)}%)`} />
+                          <Cell label="MAKE" value={`${attrs.make ?? "N/A"} (${(attrs.make_confidence * 100).toFixed(0)}%)`} />
+                          <Cell label="CONDITION" value={`${attrs.condition ?? "N/A"} (${(attrs.condition_confidence * 100).toFixed(0)}%)`} />
+                          <Cell label="DIRECTION" value={attrs.direction?.replace(/_/g, " ") ?? "N/A"} />
+                          <Cell label="VEHICLE CLASS" value={attrs.vehicle_class?.replace(/_/g, " ") ?? "N/A"} />
+                          <Cell label="OCCUPANTS" value={attrs.occupants?.replace(/_/g, " ") ?? "N/A"} />
+                          <Cell label="DAMAGE VISIBLE" value={attrs.damage_visible ? "Yes" : "No"} color={attrs.damage_visible ? "#ff2d78" : "#00ff88"} />
+                          <Cell label="LIGHTS" value={attrs.lights ?? "N/A"} />
+                          <Cell label="MODIFICATIONS" value={attrs.modifications?.replace(/_/g, " ") ?? "N/A"} />
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  <div className="h-px bg-gradient-to-r from-[#00ff88]/20 to-transparent" />
                   <div className="space-y-2">
                     <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#4a6a8a]">SOURCE CAMERA</h4>
                     <div className="grid grid-cols-2 gap-2">

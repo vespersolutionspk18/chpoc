@@ -1,4 +1,6 @@
 """Serve video files and handle frame analysis."""
+import base64
+import io
 import logging
 
 import httpx
@@ -6,6 +8,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Form, UploadFile, File
 from fastapi.responses import FileResponse, Response
 from starlette.responses import StreamingResponse as StarletteStreamingResponse
+from PIL import Image
 
 from app.core.config import settings
 
@@ -68,9 +71,19 @@ async def detect_frame(
 async def analyze_person(
     image: UploadFile = File(...),
 ):
-    """Full person analysis: face detection, embedding, attributes."""
+    """Full person analysis: face detection, embedding, attributes, with images."""
     contents = await image.read()
-    results = {"type": "person", "face": None, "attributes": {}}
+
+    # Encode full person crop as base64
+    person_image_b64 = base64.b64encode(contents).decode("ascii")
+
+    results: dict = {
+        "type": "person",
+        "person_image_b64": person_image_b64,
+        "face": None,
+        "face_image_b64": None,
+        "attributes": {},
+    }
 
     async with httpx.AsyncClient() as client:
         # Face detection + embedding
@@ -84,6 +97,21 @@ async def analyze_person(
                 faces = resp.json()
                 if faces:
                     results["face"] = faces[0]
+                    # Crop the face from the person image and encode as base64
+                    try:
+                        face_bbox = faces[0].get("face_bbox", {})
+                        fx = int(face_bbox.get("x", 0))
+                        fy = int(face_bbox.get("y", 0))
+                        fw = int(face_bbox.get("w", 0))
+                        fh = int(face_bbox.get("h", 0))
+                        if fw > 0 and fh > 0:
+                            pil_img = Image.open(io.BytesIO(contents))
+                            face_crop = pil_img.crop((fx, fy, fx + fw, fy + fh))
+                            buf = io.BytesIO()
+                            face_crop.save(buf, format="JPEG", quality=85)
+                            results["face_image_b64"] = base64.b64encode(buf.getvalue()).decode("ascii")
+                    except Exception as crop_err:
+                        logger.warning("Face crop failed: %s", crop_err)
         except Exception:
             pass
 
@@ -92,7 +120,7 @@ async def analyze_person(
             resp = await client.post(
                 f"{settings.AI_SERVICE_URL}/attributes/person",
                 files={"image": ("crop.jpg", contents, "image/jpeg")},
-                timeout=10.0,
+                timeout=30.0,
             )
             if resp.status_code == 200:
                 results["attributes"] = resp.json()
@@ -106,9 +134,18 @@ async def analyze_person(
 async def analyze_vehicle(
     image: UploadFile = File(...),
 ):
-    """Full vehicle analysis: plate OCR, attributes."""
+    """Full vehicle analysis: plate OCR, attributes, with images."""
     contents = await image.read()
-    results = {"type": "vehicle", "plate": None, "attributes": {}}
+
+    # Encode full vehicle crop as base64
+    vehicle_image_b64 = base64.b64encode(contents).decode("ascii")
+
+    results: dict = {
+        "type": "vehicle",
+        "vehicle_image_b64": vehicle_image_b64,
+        "plate": None,
+        "attributes": {},
+    }
 
     async with httpx.AsyncClient() as client:
         # Plate OCR
@@ -116,10 +153,30 @@ async def analyze_vehicle(
             resp = await client.post(
                 f"{settings.AI_SERVICE_URL}/plate/read",
                 files={"image": ("crop.jpg", contents, "image/jpeg")},
-                timeout=10.0,
+                timeout=15.0,
             )
             if resp.status_code == 200:
-                results["plate"] = resp.json()
+                plate_data = resp.json()
+                # If plate was detected, crop and encode the plate region as base64
+                plate_image_b64 = None
+                if plate_data.get("plate_text"):
+                    try:
+                        pbbox = plate_data.get("plate_bbox", {})
+                        px = int(pbbox.get("x", 0))
+                        py = int(pbbox.get("y", 0))
+                        pw = int(pbbox.get("w", 0))
+                        ph = int(pbbox.get("h", 0))
+                        if pw > 0 and ph > 0:
+                            pil_img = Image.open(io.BytesIO(contents))
+                            plate_crop = pil_img.crop((px, py, px + pw, py + ph))
+                            buf = io.BytesIO()
+                            plate_crop.save(buf, format="JPEG", quality=90)
+                            plate_image_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+                    except Exception as crop_err:
+                        logger.warning("Plate crop failed: %s", crop_err)
+
+                plate_data["plate_image_b64"] = plate_image_b64
+                results["plate"] = plate_data
         except Exception:
             pass
 
@@ -128,7 +185,7 @@ async def analyze_vehicle(
             resp = await client.post(
                 f"{settings.AI_SERVICE_URL}/attributes/vehicle",
                 files={"image": ("crop.jpg", contents, "image/jpeg")},
-                timeout=10.0,
+                timeout=30.0,
             )
             if resp.status_code == 200:
                 results["attributes"] = resp.json()
