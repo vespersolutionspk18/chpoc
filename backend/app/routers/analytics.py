@@ -109,7 +109,7 @@ async def heatmap_data(
 
 @router.get("/traffic", response_model=list[TrafficStats])
 async def traffic_stats(
-    period: str = Query(default="1h", regex="^(1h|6h|24h|7d)$"),
+    period: str = Query(default="1h", pattern="^(1h|6h|24h|7d)$"),
     db: AsyncSession = Depends(get_db),
 ):
     """Traffic flow stats per camera."""

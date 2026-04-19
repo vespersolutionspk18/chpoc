@@ -125,7 +125,7 @@ class AlertBase(BaseModel):
     severity: AlertSeverityEnum = AlertSeverityEnum.MEDIUM
     status: AlertStatusEnum = AlertStatusEnum.NEW
     thumbnail_url: str | None = None
-    metadata: dict | None = None
+    metadata: dict | None = Field(default=None, validation_alias="metadata_")
 
 
 class AlertCreate(AlertBase):
@@ -186,7 +186,7 @@ class EventProfileBase(BaseModel):
     event_type: EventTypeEnum
     start_time: datetime
     end_time: datetime
-    affected_camera_ids: list[uuid.UUID] | None = None
+    affected_camera_ids: list | None = None
     threshold_overrides: dict | None = None
     suppressed_alert_types: list[str] | None = None
     status: EventStatusEnum = EventStatusEnum.SCHEDULED
