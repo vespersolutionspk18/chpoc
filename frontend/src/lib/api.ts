@@ -19,7 +19,12 @@ import type {
 const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
+  // Ensure paths ending at a router root have trailing slash (FastAPI requires it)
+  let normalizedPath = path;
+  if (!normalizedPath.includes("?") && !normalizedPath.match(/\/[^/]+\.[^/]+$/) && !normalizedPath.endsWith("/")) {
+    normalizedPath += "/";
+  }
+  const res = await fetch(`${BASE_URL}${normalizedPath}`, {
     headers: { "Content-Type": "application/json", ...options?.headers },
     ...options,
   });
