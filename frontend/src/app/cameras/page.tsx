@@ -31,8 +31,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { MOCK_CAMERAS } from "@/lib/mock-data";
 import { getCameras, createCamera, updateCamera } from "@/lib/api";
+import { PageSkeleton } from "@/components/page-skeleton";
 import type { Camera, CameraStatus } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
@@ -41,7 +41,7 @@ import type { Camera, CameraStatus } from "@/lib/types";
 
 export default function CamerasPage() {
   // Data state
-  const [cameras, setCameras] = useState<Camera[]>(MOCK_CAMERAS);
+  const [cameras, setCameras] = useState<Camera[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Filter state
@@ -68,7 +68,7 @@ export default function CamerasPage() {
         const data = await getCameras();
         if (!cancelled) setCameras(data);
       } catch {
-        // Keep mock data
+        // API unavailable -- data stays empty
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -146,6 +146,10 @@ export default function CamerasPage() {
     }
 
     setDialogOpen(false);
+  }
+
+  if (loading) {
+    return <PageSkeleton />;
   }
 
   return (

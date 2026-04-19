@@ -87,11 +87,17 @@ async def analyze_person(
         except Exception:
             pass
 
-        # Person attributes (simulated for POC -- real model would go here)
-        # In production this would call /attributes/person
-        results["attributes"] = {
-            "detected": True,
-        }
+        # Person attributes
+        try:
+            resp = await client.post(
+                f"{settings.AI_SERVICE_URL}/attributes/person",
+                files={"image": ("crop.jpg", contents, "image/jpeg")},
+                timeout=10.0,
+            )
+            if resp.status_code == 200:
+                results["attributes"] = resp.json()
+        except Exception:
+            pass
 
     return results
 
@@ -114,6 +120,18 @@ async def analyze_vehicle(
             )
             if resp.status_code == 200:
                 results["plate"] = resp.json()
+        except Exception:
+            pass
+
+        # Vehicle attributes
+        try:
+            resp = await client.post(
+                f"{settings.AI_SERVICE_URL}/attributes/vehicle",
+                files={"image": ("crop.jpg", contents, "image/jpeg")},
+                timeout=10.0,
+            )
+            if resp.status_code == 200:
+                results["attributes"] = resp.json()
         except Exception:
             pass
 

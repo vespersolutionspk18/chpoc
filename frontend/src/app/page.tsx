@@ -23,20 +23,16 @@ import { Button } from "@/components/ui/button";
 import { useAlertWebSocket } from "@/hooks/use-alert-websocket";
 import { useAlertStore } from "@/lib/stores/use-alert-store";
 import {
-  MOCK_CAMERAS,
-  MOCK_ALERTS,
-  MOCK_DASHBOARD_STATS,
-  MOCK_ACTIVITY_DATA,
-} from "@/lib/mock-data";
-import {
   getDashboardStats,
   getCameras,
   getAlerts,
+  getActivityData,
   startPipeline,
   stopPipeline,
   getPipelineStatus,
 } from "@/lib/api";
 import type {
+  ActivityDataPoint,
   Alert as AlertType,
   Camera as CameraType,
   DashboardStats,
@@ -82,9 +78,17 @@ function SectionTitle({ children }: { children: string }) {
 // ---------------------------------------------------------------------------
 
 export default function DashboardPage() {
-  const [stats, setStats] = useState<DashboardStats>(MOCK_DASHBOARD_STATS);
-  const [cameras, setCameras] = useState<CameraType[]>(MOCK_CAMERAS);
-  const [alerts, setAlerts] = useState<AlertType[]>(MOCK_ALERTS);
+  const [stats, setStats] = useState<DashboardStats>({
+    total_cameras: 0,
+    online_cameras: 0,
+    total_alerts_today: 0,
+    critical_alerts: 0,
+    active_tracks: 0,
+    total_plates_today: 0,
+  });
+  const [cameras, setCameras] = useState<CameraType[]>([]);
+  const [alerts, setAlerts] = useState<AlertType[]>([]);
+  const [activityData, setActivityData] = useState<ActivityDataPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [pipelineRunning, setPipelineRunning] = useState(false);
   const [pipelineLoading, setPipelineLoading] = useState(false);
@@ -102,22 +106,24 @@ export default function DashboardPage() {
 
     async function fetchData() {
       try {
-        const [statsData, camerasData, alertsData] = await Promise.all([
+        const [statsData, camerasData, alertsData, actData] = await Promise.all([
           getDashboardStats(),
           getCameras(),
           getAlerts(),
+          getActivityData(24),
         ]);
 
         if (!cancelled) {
           setStats(statsData);
           setCameras(camerasData);
           setAlerts(alertsData);
+          setActivityData(actData);
           // Seed the alert store with fetched alerts if no WS alerts exist yet
           useAlertStore.getState().setAlerts(alertsData);
         }
       } catch (err) {
-        // API unavailable -- keep mock data as fallback
-        console.warn("API fetch failed, using mock data:", err);
+        // API unavailable -- data stays empty
+        console.warn("API fetch failed:", err);
       } finally {
         if (!cancelled) {
           setLoading(false);
@@ -317,7 +323,7 @@ export default function DashboardPage() {
         <div>
           <SectionTitle>ACTIVITY ANALYSIS</SectionTitle>
           <div className="hud-card p-4">
-            <ActivityChart data={MOCK_ACTIVITY_DATA} height={350} />
+            <ActivityChart data={activityData} height={350} />
           </div>
         </div>
 

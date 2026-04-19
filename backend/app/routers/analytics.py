@@ -5,11 +5,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.models.alert import Alert, AlertSeverity
+from app.models.alert import Alert, AlertSeverity, AlertType
 from app.models.camera import Camera, CameraStatus
 from app.models.plate import PlateRead
 from app.models.track import Track
-from app.schemas.common import DashboardStats, HeatmapPoint, TrafficStats
+from app.models.track import ObjectType
+from app.schemas.common import ActivityDataPoint, AlertTrendDataPoint, DashboardStats, HeatmapPoint, TrafficStats
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
@@ -154,3 +155,98 @@ async def traffic_stats(
             )
         )
     return stats
+
+
+@router.get("/activity", response_model=list[ActivityDataPoint])
+async def activity_data(
+    hours: int = Query(default=24, ge=1, le=168),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return hourly person/vehicle counts for the activity chart."""
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(hours=hours)
+
+    # Query tracks grouped by hour and object type
+    stmt = (
+        select(
+            func.date_trunc("hour", Track.start_time).label("hour"),
+            Track.object_type,
+            func.count(Track.id).label("cnt"),
+        )
+        .where(Track.start_time >= since)
+        .group_by("hour", Track.object_type)
+        .order_by("hour")
+    )
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    # Build a dict keyed by hour string
+    hour_map: dict[str, dict[str, int]] = {}
+    for h in range(hours):
+        t = since + timedelta(hours=h)
+        key = t.strftime("%H:00")
+        hour_map[key] = {"people": 0, "vehicles": 0}
+
+    for hour_dt, obj_type, cnt in rows:
+        key = hour_dt.strftime("%H:00")
+        if key not in hour_map:
+            hour_map[key] = {"people": 0, "vehicles": 0}
+        if obj_type in (ObjectType.PERSON,):
+            hour_map[key]["people"] += cnt
+        elif obj_type in (ObjectType.VEHICLE, ObjectType.BIKE):
+            hour_map[key]["vehicles"] += cnt
+
+    return [
+        ActivityDataPoint(time=k, people=v["people"], vehicles=v["vehicles"])
+        for k, v in hour_map.items()
+    ]
+
+
+@router.get("/alert-trends", response_model=list[AlertTrendDataPoint])
+async def alert_trends(
+    hours: int = Query(default=24, ge=1, le=168),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return hourly alert counts by type for the trend chart."""
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(hours=hours)
+
+    stmt = (
+        select(
+            func.date_trunc("hour", Alert.timestamp).label("hour"),
+            Alert.alert_type,
+            func.count(Alert.id).label("cnt"),
+        )
+        .where(Alert.timestamp >= since)
+        .group_by("hour", Alert.alert_type)
+        .order_by("hour")
+    )
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    # Map alert types to trend categories
+    TYPE_MAP = {
+        AlertType.INTRUSION: "intrusion",
+        AlertType.LOITERING: "loitering",
+        AlertType.CROWD: "crowd",
+        AlertType.FIGHT: "fight",
+        AlertType.FIRE: "fire",
+    }
+
+    hour_map: dict[str, dict[str, int]] = {}
+    for h in range(hours):
+        t = since + timedelta(hours=h)
+        key = t.strftime("%H:00")
+        hour_map[key] = {"intrusion": 0, "loitering": 0, "crowd": 0, "fight": 0, "fire": 0, "other": 0}
+
+    for hour_dt, alert_type, cnt in rows:
+        key = hour_dt.strftime("%H:00")
+        if key not in hour_map:
+            hour_map[key] = {"intrusion": 0, "loitering": 0, "crowd": 0, "fight": 0, "fire": 0, "other": 0}
+        category = TYPE_MAP.get(alert_type, "other")
+        hour_map[key][category] += cnt
+
+    return [
+        AlertTrendDataPoint(time=k, **v)
+        for k, v in hour_map.items()
+    ]

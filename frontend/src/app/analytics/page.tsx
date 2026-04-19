@@ -13,19 +13,15 @@ import { TrafficFlowChart } from "@/components/traffic-flow-chart";
 import { CameraUptimeChart } from "@/components/camera-uptime-chart";
 import { GaugeIndicator } from "@/components/gauge-indicator";
 
-import {
-  MOCK_CAMERAS,
-  MOCK_ACTIVITY_DATA,
-  MOCK_ALERT_TREND_DATA,
-  MOCK_TRAFFIC_STATS,
-  MOCK_DASHBOARD_STATS,
-} from "@/lib/mock-data";
+import { PageSkeleton } from "@/components/page-skeleton";
 import {
   getDashboardStats,
   getTrafficStats,
   getCameras,
+  getActivityData,
+  getAlertTrends,
 } from "@/lib/api";
-import type { DashboardStats, TrafficStats, Camera as CameraType } from "@/lib/types";
+import type { ActivityDataPoint, AlertTrendDataPoint, DashboardStats, TrafficStats, Camera as CameraType } from "@/lib/types";
 
 const CityMap = dynamic(() => import("@/components/city-map"), { ssr: false });
 
@@ -66,29 +62,51 @@ function SectionTitle({ children }: { children: string }) {
 // Page
 // ---------------------------------------------------------------------------
 
+const DEFAULT_STATS: DashboardStats = {
+  total_cameras: 0,
+  online_cameras: 0,
+  total_alerts_today: 0,
+  critical_alerts: 0,
+  active_tracks: 0,
+  total_plates_today: 0,
+};
+
 export default function AnalyticsPage() {
   const [timePeriod, setTimePeriod] = useState("24h");
-  const [dashStats, setDashStats] = useState<DashboardStats>(MOCK_DASHBOARD_STATS);
-  const [trafficStats, setTrafficStats] = useState<TrafficStats[]>(MOCK_TRAFFIC_STATS);
-  const [cameras, setCameras] = useState<CameraType[]>(MOCK_CAMERAS);
+  const [dashStats, setDashStats] = useState<DashboardStats>(DEFAULT_STATS);
+  const [trafficStats, setTrafficStats] = useState<TrafficStats[]>([]);
+  const [cameras, setCameras] = useState<CameraType[]>([]);
+  const [activityData, setActivityData] = useState<ActivityDataPoint[]>([]);
+  const [alertTrendData, setAlertTrendData] = useState<AlertTrendDataPoint[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // Map time period to hours for new endpoints
+  const hoursMap: Record<string, number> = { "1h": 1, "6h": 6, "24h": 24, "7d": 168 };
 
   // Fetch real data from API
   useEffect(() => {
     let cancelled = false;
     async function load() {
       try {
-        const [stats, traffic, cams] = await Promise.all([
+        const hrs = hoursMap[timePeriod] ?? 24;
+        const [stats, traffic, cams, activity, trends] = await Promise.all([
           getDashboardStats(),
           getTrafficStats(timePeriod),
           getCameras(),
+          getActivityData(hrs),
+          getAlertTrends(hrs),
         ]);
         if (!cancelled) {
           setDashStats(stats);
           setTrafficStats(traffic);
           setCameras(cams);
+          setActivityData(activity);
+          setAlertTrendData(trends);
         }
       } catch {
-        // Keep mock data
+        // API unavailable -- data stays empty
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     }
     load();
@@ -116,6 +134,10 @@ export default function AnalyticsPage() {
     { value: "24h", label: "24H" },
     { value: "7d", label: "7D" },
   ];
+
+  if (loading) {
+    return <PageSkeleton />;
+  }
 
   return (
     <motion.div
@@ -189,7 +211,7 @@ export default function AnalyticsPage() {
             <h3 className="font-heading text-[10px] uppercase tracking-[0.2em] text-[#00f0ff]/70 mb-3">
               ACTIVITY ANALYSIS
             </h3>
-            <ActivityChart data={MOCK_ACTIVITY_DATA} height={280} />
+            <ActivityChart data={activityData} height={280} />
           </div>
 
           {/* Threat Trends */}
@@ -197,7 +219,7 @@ export default function AnalyticsPage() {
             <h3 className="font-heading text-[10px] uppercase tracking-[0.2em] text-[#ff2d78]/70 mb-3">
               THREAT TRENDS
             </h3>
-            <AlertTrendChart data={MOCK_ALERT_TREND_DATA} height={280} />
+            <AlertTrendChart data={alertTrendData} height={280} />
           </div>
 
           {/* Traffic Flow */}
@@ -205,7 +227,7 @@ export default function AnalyticsPage() {
             <h3 className="font-heading text-[10px] uppercase tracking-[0.2em] text-[#00ff88]/70 mb-3">
               TRAFFIC FLOW
             </h3>
-            <TrafficFlowChart data={trafficStats.length > 0 ? trafficStats : MOCK_TRAFFIC_STATS} height={280} />
+            <TrafficFlowChart data={trafficStats} height={280} />
           </div>
 
           {/* Asset Uptime */}

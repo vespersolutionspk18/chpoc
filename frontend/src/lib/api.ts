@@ -3,7 +3,9 @@
 // ---------------------------------------------------------------------------
 
 import type {
+  ActivityDataPoint,
   Alert,
+  AlertTrendDataPoint,
   AttributeSearchQuery,
   Camera,
   DashboardStats,
@@ -137,6 +139,12 @@ export const getHeatmapData = (startTime?: string, endTime?: string) => {
 
 export const getTrafficStats = (period: string = "24h") =>
   request<TrafficStats[]>(`/api/analytics/traffic?period=${period}`);
+
+export const getActivityData = (hours: number = 24) =>
+  request<ActivityDataPoint[]>(`/api/analytics/activity?hours=${hours}`);
+
+export const getAlertTrends = (hours: number = 24) =>
+  request<AlertTrendDataPoint[]>(`/api/analytics/alert-trends?hours=${hours}`);
 
 // ---------------------------------------------------------------------------
 // Events

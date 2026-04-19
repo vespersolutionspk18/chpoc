@@ -31,7 +31,6 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Separator } from "@/components/ui/separator";
-import { MOCK_ALERTS, MOCK_CAMERAS } from "@/lib/mock-data";
 import {
   getAlerts,
   getCameras,
@@ -39,6 +38,7 @@ import {
   dismissAlert,
   escalateAlert,
 } from "@/lib/api";
+import { PageSkeleton } from "@/components/page-skeleton";
 import { useAlertWebSocket } from "@/hooks/use-alert-websocket";
 import { useAlertStore } from "@/lib/stores/use-alert-store";
 import type { Alert, AlertType, AlertSeverity, AlertStatus, Camera } from "@/lib/types";
@@ -99,8 +99,8 @@ export default function AlertsPage() {
   const [cameraFilter, setCameraFilter] = useState<string>("all");
 
   // Data state
-  const [alerts, setAlerts] = useState<Alert[]>(MOCK_ALERTS);
-  const [cameras, setCameras] = useState<Camera[]>(MOCK_CAMERAS);
+  const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [cameras, setCameras] = useState<Camera[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Selected alert for detail sheet
@@ -131,7 +131,7 @@ export default function AlertsPage() {
           }
         }
       } catch {
-        // Keep mock data
+        // API unavailable -- data stays empty
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -191,6 +191,10 @@ export default function AlertsPage() {
     } catch {
       console.warn("Escalate failed for:", alertId);
     }
+  }
+
+  if (loading) {
+    return <PageSkeleton />;
   }
 
   return (

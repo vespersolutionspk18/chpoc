@@ -286,3 +286,19 @@ class TrafficStats(BaseModel):
     person_count: int
     avg_speed: float | None = None
     period: str
+
+
+class ActivityDataPoint(BaseModel):
+    time: str
+    people: int
+    vehicles: int
+
+
+class AlertTrendDataPoint(BaseModel):
+    time: str
+    intrusion: int = 0
+    loitering: int = 0
+    crowd: int = 0
+    fight: int = 0
+    fire: int = 0
+    other: int = 0

@@ -32,7 +32,6 @@ import {
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
 
-import { MOCK_EVENTS, MOCK_CAMERAS } from "@/lib/mock-data";
 import {
   getEvents,
   getCameras,
@@ -40,6 +39,7 @@ import {
   activateEvent,
   deactivateEvent,
 } from "@/lib/api";
+import { PageSkeleton } from "@/components/page-skeleton";
 import type {
   EventProfile,
   EventType,
@@ -151,8 +151,9 @@ function SectionTitle({ children }: { children: string }) {
 export default function EventsPage() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [dialogOpen, setDialogOpen] = useState(false);
-  const [events, setEvents] = useState<EventProfile[]>(MOCK_EVENTS);
-  const [cameras, setCameras] = useState<CameraType[]>(MOCK_CAMERAS);
+  const [events, setEvents] = useState<EventProfile[]>([]);
+  const [cameras, setCameras] = useState<CameraType[]>([]);
+  const [loading, setLoading] = useState(true);
 
   // Create form state
   const [formName, setFormName] = useState("");
@@ -180,7 +181,9 @@ export default function EventsPage() {
           setCameras(camerasData);
         }
       } catch {
-        // Keep mock data
+        // API unavailable -- data stays empty
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     }
     load();
@@ -310,6 +313,10 @@ export default function EventsPage() {
     { value: "ACTIVE", label: "ACTIVE" },
     { value: "COMPLETED", label: "COMPLETED" },
   ];
+
+  if (loading) {
+    return <PageSkeleton />;
+  }
 
   return (
     <motion.div

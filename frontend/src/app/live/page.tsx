@@ -8,7 +8,6 @@ import { PageHeader } from "@/components/page-header";
 import { CameraFeedCard } from "@/components/camera-feed-card";
 import { InteractiveCameraViewer } from "@/components/interactive-camera-viewer";
 import { Button } from "@/components/ui/button";
-import { MOCK_CAMERAS, MOCK_ALERTS } from "@/lib/mock-data";
 import {
   getCameras,
   getAlerts,
@@ -17,7 +16,8 @@ import {
   stopPipeline,
   getPipelineStatus,
 } from "@/lib/api";
-import type { Camera, Detection } from "@/lib/types";
+import { PageSkeleton } from "@/components/page-skeleton";
+import type { Alert, Camera, Detection } from "@/lib/types";
 import type { FrameData } from "@/lib/api";
 
 // ---------------------------------------------------------------------------
@@ -39,11 +39,12 @@ type GridLayout = keyof typeof GRID_CONFIG;
 export default function LiveViewPage() {
   const [gridLayout, setGridLayout] = useState<GridLayout>("2x2");
   const [fullscreenCamera, setFullscreenCamera] = useState<Camera | null>(null);
-  const [cameras, setCameras] = useState<Camera[]>(MOCK_CAMERAS);
+  const [cameras, setCameras] = useState<Camera[]>([]);
   const [frameData, setFrameData] = useState<Record<string, FrameData>>({});
   const [pipelineRunning, setPipelineRunning] = useState(false);
   const [pipelineLoading, setPipelineLoading] = useState(false);
-  const [alerts, setAlerts] = useState(MOCK_ALERTS);
+  const [alerts, setAlerts] = useState<Alert[]>([]);
+  const [loading, setLoading] = useState(true);
 
   // Load cameras from API
   useEffect(() => {
@@ -60,6 +61,8 @@ export default function LiveViewPage() {
         }
       } catch (err) {
         console.error("[LiveView] Failed to fetch cameras/alerts:", err);
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     }
     load();
@@ -131,6 +134,10 @@ export default function LiveViewPage() {
     { layout: "3x3", icon: Grid3x3, label: "3x3" },
     { layout: "4x4", icon: LayoutGrid, label: "4x4" },
   ];
+
+  if (loading) {
+    return <PageSkeleton />;
+  }
 
   return (
     <>
