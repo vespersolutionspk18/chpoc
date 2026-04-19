@@ -46,15 +46,12 @@ def draw_detections(frame: np.ndarray, detections: list[dict]) -> np.ndarray:
     h, w = frame.shape[:2]
     for det in detections:
         bbox = det.get("bbox", {})
-        # The AI service returns coordinates relative to 640x640 input
-        # Scale to actual frame dimensions
-        scale_x = w / 640
-        scale_y = h / 640
-
-        x = int(float(bbox.get("x", 0)) * scale_x)
-        y = int(float(bbox.get("y", 0)) * scale_y)
-        bw = int(float(bbox.get("w", bbox.get("width", 50))) * scale_x)
-        bh = int(float(bbox.get("h", bbox.get("height", 50))) * scale_y)
+        # YOLOv8 returns coordinates in the original image space
+        # The frame sent was 640x360, same as our stream — no scaling needed
+        x = int(float(bbox.get("x", 0)))
+        y = int(float(bbox.get("y", 0)))
+        bw = int(float(bbox.get("w", bbox.get("width", 50))))
+        bh = int(float(bbox.get("h", bbox.get("height", 50))))
 
         # Clamp
         x = max(0, min(x, w - 1))
