@@ -2,13 +2,11 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Grid2x2, Grid3x3, LayoutGrid, X, Play, Square } from "lucide-react";
+import { Grid2x2, Grid3x3, LayoutGrid, Play, Square } from "lucide-react";
 
 import { PageHeader } from "@/components/page-header";
 import { CameraFeedCard } from "@/components/camera-feed-card";
-import { DetectionOverlay } from "@/components/detection-overlay";
-import { SeverityBadge } from "@/components/severity-badge";
-import { StatusDot } from "@/components/status-dot";
+import { InteractiveCameraViewer } from "@/components/interactive-camera-viewer";
 import { Button } from "@/components/ui/button";
 import { MOCK_CAMERAS, MOCK_ALERTS } from "@/lib/mock-data";
 import {
@@ -128,14 +126,6 @@ export default function LiveViewPage() {
     return cameraId in frameData;
   }
 
-  const fullscreenAlerts = fullscreenCamera
-    ? alerts.filter((a) => a.camera_id === fullscreenCamera.id).slice(0, 4)
-    : [];
-
-  const fullscreenDetections = fullscreenCamera
-    ? getCameraDetections(fullscreenCamera.id)
-    : [];
-
   const layoutButtons: { layout: GridLayout; icon: typeof Grid2x2; label: string }[] = [
     { layout: "2x2", icon: Grid2x2, label: "2x2" },
     { layout: "3x3", icon: Grid3x3, label: "3x3" },
@@ -233,135 +223,17 @@ export default function LiveViewPage() {
       </motion.div>
 
       {/* ================================================================== */}
-      {/* FULLSCREEN OVERLAY -- no Dialog component, pure portal-free overlay */}
+      {/* INTERACTIVE CAMERA VIEWER -- replaces old MJPEG fullscreen overlay */}
       {/* ================================================================== */}
       <AnimatePresence>
         {fullscreenCamera && (
-          <motion.div
-            key="fullscreen-overlay"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            className="fixed inset-0 z-[9999] flex flex-col"
-            style={{ background: "#030712" }}
-          >
-            {/* Top bar */}
-            <div className="flex h-12 shrink-0 items-center justify-between border-b border-[#00f0ff]/15 bg-[#020a18] px-5">
-              <div className="flex items-center gap-3">
-                <StatusDot status={fullscreenCamera.status} size="md" />
-                <span className="font-heading text-sm uppercase tracking-[0.15em] text-[#00f0ff]">
-                  {fullscreenCamera.name}
-                </span>
-                <span className="rounded-sm border border-[#00f0ff]/20 bg-[#00f0ff]/5 px-2 py-0.5 font-data text-[10px] text-[#00f0ff]/70">
-                  {fullscreenCamera.id}
-                </span>
-              </div>
-
-              <div className="flex items-center gap-3">
-                <InfoPill label="SECTOR" value={fullscreenCamera.zone_id ?? "N/A"} />
-                <InfoPill label="STATUS" value={fullscreenCamera.status.toUpperCase()} />
-                <InfoPill label="COORD" value={`${fullscreenCamera.location_lat.toFixed(4)}, ${fullscreenCamera.location_lng.toFixed(4)}`} />
-
-                <button
-                  onClick={() => setFullscreenCamera(null)}
-                  className="ml-2 rounded-sm border border-[#ff2d78]/30 bg-[#ff2d78]/10 p-1.5 text-[#ff2d78] transition-colors hover:bg-[#ff2d78]/20"
-                >
-                  <X className="size-4" />
-                </button>
-              </div>
-            </div>
-
-            {/* Camera feed -- fills all remaining space */}
-            <div className="relative flex-1 overflow-hidden bg-gradient-to-br from-[#0a1525] to-[#060d1a]">
-              {/* MJPEG video stream with detection overlays drawn server-side */}
-              <img
-                src={`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"}/api/stream/${fullscreenCamera.id}`}
-                alt={fullscreenCamera.name}
-                className="absolute inset-0 w-full h-full object-cover"
-              />
-
-              {/* HUD: top-left -- camera name */}
-              <div className="absolute left-5 top-5 z-20">
-                <span className="font-data text-sm text-[#00f0ff]/60">{fullscreenCamera.name}</span>
-              </div>
-
-              {/* HUD: top-right -- LIVE */}
-              <div className="absolute right-5 top-5 z-20 flex items-center gap-1.5">
-                <span className="inline-block size-2.5 animate-pulse rounded-full bg-[#ff2d78] shadow-[0_0_8px_#ff2d78]" />
-                <span className="font-heading text-[10px] tracking-wider text-[#ff2d78]">LIVE</span>
-              </div>
-
-              {/* HUD: bottom-left -- stats from real data */}
-              <div className="absolute bottom-5 left-5 z-20 flex gap-2">
-                <HudStat
-                  label="TARGETS"
-                  value={String(fullscreenDetections.filter((d) => d.object_type === "person").length)}
-                  color="#00f0ff"
-                />
-                <HudStat
-                  label="VEHICLES"
-                  value={String(fullscreenDetections.filter((d) => d.object_type === "vehicle").length)}
-                  color="#00ff88"
-                />
-                <HudStat
-                  label="TOTAL"
-                  value={String(fullscreenDetections.length)}
-                  color="#ffaa00"
-                />
-                <HudStat label="FPS" value="30" color="#00ff88" />
-              </div>
-
-              {/* HUD: bottom-right -- recent threats */}
-              {fullscreenAlerts.length > 0 && (
-                <div className="absolute bottom-5 right-5 z-20 w-80 space-y-1">
-                  <span className="font-heading text-[8px] uppercase tracking-[0.25em] text-[#4a6a8a]">
-                    RECENT THREATS
-                  </span>
-                  {fullscreenAlerts.map((alert) => (
-                    <div
-                      key={alert.id}
-                      className="flex items-center justify-between rounded-sm border border-white/5 bg-[#020a18]/80 px-3 py-1.5 backdrop-blur-sm"
-                    >
-                      <div className="flex items-center gap-2">
-                        <SeverityBadge severity={alert.severity} />
-                        <span className="font-heading text-[9px] uppercase tracking-wider text-slate-300">
-                          {alert.alert_type.replace(/_/g, " ")}
-                        </span>
-                      </div>
-                      <span className="font-data text-[9px] text-[#4a6a8a]">
-                        {alert.timestamp}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </motion.div>
+          <InteractiveCameraViewer
+            camera={fullscreenCamera}
+            onClose={() => setFullscreenCamera(null)}
+          />
         )}
       </AnimatePresence>
     </>
   );
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function InfoPill({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-sm border border-[#00f0ff]/10 bg-[#00f0ff]/[0.03] px-3 py-1">
-      <span className="font-heading text-[7px] uppercase tracking-[0.2em] text-[#4a6a8a]">{label}</span>
-      <p className="font-data text-[11px] text-slate-300">{value}</p>
-    </div>
-  );
-}
-
-function HudStat({ label, value, color }: { label: string; value: string; color: string }) {
-  return (
-    <div className="rounded-sm border border-white/5 bg-[#020a18]/80 px-3 py-1.5 text-center backdrop-blur-sm">
-      <span className="font-heading text-[7px] uppercase tracking-[0.2em] text-[#4a6a8a]">{label}</span>
-      <p className="font-data text-sm" style={{ color }}>{value}</p>
-    </div>
-  );
-}

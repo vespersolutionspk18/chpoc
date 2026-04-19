@@ -1,0 +1,107 @@
+"""Serve video files and handle frame analysis."""
+import logging
+
+import httpx
+from pathlib import Path
+from fastapi import APIRouter, HTTPException, Form, UploadFile, File
+from fastapi.responses import FileResponse
+
+from app.core.config import settings
+
+logger = logging.getLogger(__name__)
+router = APIRouter(prefix="/video", tags=["video"])
+
+VIDEO_MAP = {
+    "00000000-0000-4000-8000-000000000001": "clip_peshawar_streets.mp4",
+    "00000000-0000-4000-8000-000000000002": "clip_peshawar_bazaar.mp4",
+    "00000000-0000-4000-8000-000000000003": "clip_charsadda_drone.mp4",
+    "00000000-0000-4000-8000-000000000004": "clip_peshawar_walking.mp4",
+    "00000000-0000-4000-8000-000000000005": "clip_rawalpindi_streets.mp4",
+}
+
+
+@router.get("/file/{camera_id}")
+async def get_video_file(camera_id: str):
+    """Serve the video file directly for HTML5 video playback."""
+    video_name = VIDEO_MAP.get(camera_id)
+    if not video_name:
+        raise HTTPException(404, "No video for this camera")
+    video_path = Path(settings.VIDEO_DIR) / video_name
+    if not video_path.exists():
+        raise HTTPException(404, f"Video file not found: {video_name}")
+    return FileResponse(str(video_path), media_type="video/mp4")
+
+
+@router.post("/detect-frame")
+async def detect_frame(
+    image: UploadFile = File(...),
+    camera_id: str = Form("unknown"),
+):
+    """Send a frame to AI service for detection. Returns detection boxes."""
+    contents = await image.read()
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{settings.AI_SERVICE_URL}/detect",
+            files={"image": ("frame.jpg", contents, "image/jpeg")},
+            data={"camera_id": camera_id, "confidence": "0.3"},
+            timeout=10.0,
+        )
+        if resp.status_code == 200:
+            return resp.json()
+    return []
+
+
+@router.post("/analyze-person")
+async def analyze_person(
+    image: UploadFile = File(...),
+):
+    """Full person analysis: face detection, embedding, attributes."""
+    contents = await image.read()
+    results = {"type": "person", "face": None, "attributes": {}}
+
+    async with httpx.AsyncClient() as client:
+        # Face detection + embedding
+        try:
+            resp = await client.post(
+                f"{settings.AI_SERVICE_URL}/face/detect",
+                files={"image": ("crop.jpg", contents, "image/jpeg")},
+                timeout=10.0,
+            )
+            if resp.status_code == 200:
+                faces = resp.json()
+                if faces:
+                    results["face"] = faces[0]
+        except Exception:
+            pass
+
+        # Person attributes (simulated for POC -- real model would go here)
+        # In production this would call /attributes/person
+        results["attributes"] = {
+            "detected": True,
+        }
+
+    return results
+
+
+@router.post("/analyze-vehicle")
+async def analyze_vehicle(
+    image: UploadFile = File(...),
+):
+    """Full vehicle analysis: plate OCR, attributes."""
+    contents = await image.read()
+    results = {"type": "vehicle", "plate": None, "attributes": {}}
+
+    async with httpx.AsyncClient() as client:
+        # Plate OCR
+        try:
+            resp = await client.post(
+                f"{settings.AI_SERVICE_URL}/plate/read",
+                files={"image": ("crop.jpg", contents, "image/jpeg")},
+                timeout=10.0,
+            )
+            if resp.status_code == 200:
+                results["plate"] = resp.json()
+        except Exception:
+            pass
+
+    return results

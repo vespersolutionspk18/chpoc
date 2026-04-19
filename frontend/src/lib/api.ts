@@ -187,3 +187,26 @@ export const getFrameData = (cameraId: string) =>
 
 export const getAllFrames = () =>
   request<Record<string, FrameData>>("/api/frames");
+
+// ---------------------------------------------------------------------------
+// Video analysis (interactive camera viewer)
+// ---------------------------------------------------------------------------
+
+export const detectFrame = (blob: Blob, cameraId: string) => {
+  const form = new FormData();
+  form.append("image", blob, "frame.jpg");
+  form.append("camera_id", cameraId);
+  return postForm<Detection[]>("/api/video/detect-frame", form);
+};
+
+export const analyzePerson = (blob: Blob) => {
+  const form = new FormData();
+  form.append("image", blob, "crop.jpg");
+  return postForm<Record<string, unknown>>("/api/video/analyze-person", form);
+};
+
+export const analyzeVehicle = (blob: Blob) => {
+  const form = new FormData();
+  form.append("image", blob, "crop.jpg");
+  return postForm<Record<string, unknown>>("/api/video/analyze-vehicle", form);
+};
