@@ -217,6 +217,7 @@ export function InteractiveCameraViewer({ camera, onClose }: InteractiveCameraVi
           <video
             ref={videoRef}
             src={videoUrl}
+            crossOrigin="anonymous"
             autoPlay
             loop
             muted

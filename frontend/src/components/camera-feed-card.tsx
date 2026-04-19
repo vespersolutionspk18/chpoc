@@ -39,21 +39,22 @@ export function CameraFeedCard({
         {/* Subtle grid-lines pattern overlay */}
         <div className="grid-lines pointer-events-none absolute inset-0 z-20 opacity-30" />
 
-        {/* MJPEG video stream -- bounding boxes are drawn server-side */}
+        {/* Native video playback — zero lag */}
         {!streamError ? (
-          <img
-            src={`${API_URL}/api/stream/${camera.id}`}
-            alt={camera.name}
+          <video
+            src={`${API_URL}/api/video/file/${camera.id}`}
+            crossOrigin="anonymous"
+            autoPlay
+            loop
+            muted
+            playsInline
             className="absolute inset-0 w-full h-full object-cover"
-            loading="lazy"
             onError={() => setStreamError(true)}
           />
         ) : (
           <>
-            {/* Fallback: dark gradient background when stream is unavailable */}
+            {/* Fallback: dark gradient when no video file */}
             <div className="absolute inset-0 bg-gradient-to-b from-[#0a1525]/60 to-[#060d1a]/80" />
-
-            {/* Fallback SVG detection overlay */}
             {detections && detections.length > 0 && (
               <DetectionOverlay
                 detections={detections}
