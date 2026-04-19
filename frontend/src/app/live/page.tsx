@@ -60,8 +60,8 @@ export default function LiveViewPage() {
           setCameras(camerasData);
           setAlerts(alertsData);
         }
-      } catch {
-        // Keep mock data
+      } catch (err) {
+        console.error("[LiveView] Failed to fetch cameras/alerts:", err);
       }
     }
     load();
