@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { X, Pause, Play } from "lucide-react";
+import { X } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { Camera } from "@/lib/types";
 
@@ -29,102 +29,122 @@ interface AnalysisResult {
   attributes: Record<string, unknown>;
 }
 
-interface InteractiveCameraViewerProps {
+interface Props {
   camera: Camera;
   onClose: () => void;
 }
 
-export function InteractiveCameraViewer({ camera, onClose }: InteractiveCameraViewerProps) {
+export function InteractiveCameraViewer({ camera, onClose }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
   const [paused, setPaused] = useState(false);
   const [detections, setDetections] = useState<Detection[]>([]);
-  const [selectedDetection, setSelectedDetection] = useState<Detection | null>(null);
-  const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
+  const [selectedDet, setSelectedDet] = useState<Detection | null>(null);
+  const [analysis, setAnalysis] = useState<AnalysisResult | null>(null);
   const [analyzing, setAnalyzing] = useState(false);
-  const [videoSize, setVideoSize] = useState({ width: 1280, height: 720 });
+  const [videoReady, setVideoReady] = useState(false);
+  const [videoSize, setVideoSize] = useState({ w: 1280, h: 720 });
+  const [error, setError] = useState<string | null>(null);
 
   const videoUrl = `${API_URL}/api/video/file/${camera.id}`;
 
-  // Run detection every 2 seconds while playing
-  useEffect(() => {
-    if (paused) return;
-
-    const interval = setInterval(() => {
+  // Capture current frame as blob
+  const captureFrame = useCallback((): Promise<Blob | null> => {
+    return new Promise((resolve) => {
       const video = videoRef.current;
       const canvas = canvasRef.current;
-      if (!video || !canvas || video.paused || video.ended) return;
-
-      // Capture current frame to canvas
+      if (!video || !canvas || video.readyState < 2) {
+        resolve(null);
+        return;
+      }
       const ctx = canvas.getContext("2d");
-      if (!ctx) return;
+      if (!ctx) { resolve(null); return; }
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
       ctx.drawImage(video, 0, 0);
+      canvas.toBlob((blob) => resolve(blob), "image/jpeg", 0.75);
+    });
+  }, []);
 
-      // Send frame to backend for detection
-      canvas.toBlob(async (blob) => {
-        if (!blob) return;
-        const form = new FormData();
-        form.append("image", blob, "frame.jpg");
-        form.append("camera_id", camera.id);
-        try {
-          const resp = await fetch(`${API_URL}/api/video/detect-frame`, {
-            method: "POST",
-            body: form,
-          });
-          if (resp.ok) {
-            const dets = await resp.json();
-            setDetections(dets);
-          }
-        } catch {
-          // Detection request failed -- keep previous detections
-        }
-      }, "image/jpeg", 0.7);
-    }, 2000);
+  // Run detection on current frame
+  const runDetection = useCallback(async () => {
+    const blob = await captureFrame();
+    if (!blob) return;
 
+    const form = new FormData();
+    form.append("image", blob, "frame.jpg");
+    form.append("camera_id", camera.id);
+
+    try {
+      const resp = await fetch(`${API_URL}/api/video/detect-frame`, {
+        method: "POST",
+        body: form,
+      });
+      if (resp.ok) {
+        const dets: Detection[] = await resp.json();
+        setDetections(dets);
+        setError(null);
+      } else {
+        setError(`Detection failed: ${resp.status}`);
+      }
+    } catch (e) {
+      setError(`Detection error: ${e}`);
+    }
+  }, [camera.id, captureFrame]);
+
+  // Poll detections every 2.5 seconds while playing
+  useEffect(() => {
+    if (!videoReady || paused) return;
+    // Run once immediately
+    runDetection();
+    const interval = setInterval(runDetection, 2500);
     return () => clearInterval(interval);
-  }, [paused, camera.id]);
+  }, [videoReady, paused, runDetection]);
 
-  // Handle video metadata loaded
-  const handleLoadedMetadata = useCallback(() => {
-    const video = videoRef.current;
-    if (video) {
-      setVideoSize({ width: video.videoWidth, height: video.videoHeight });
+  // Video loaded
+  const onVideoReady = useCallback(() => {
+    const v = videoRef.current;
+    if (v) {
+      setVideoSize({ w: v.videoWidth, h: v.videoHeight });
+      setVideoReady(true);
     }
   }, []);
 
-  // Toggle pause
-  const togglePause = useCallback(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    if (video.paused) {
-      video.play();
+  // Click on video → toggle pause
+  const onVideoClick = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) {
+      v.play();
       setPaused(false);
-      setSelectedDetection(null);
-      setAnalysisResult(null);
+      setSelectedDet(null);
+      setAnalysis(null);
     } else {
-      video.pause();
+      v.pause();
+      setPaused(true);
+      // Run detection on paused frame
+      runDetection();
+    }
+  }, [runDetection]);
+
+  // Click a detection box → analyze
+  const onDetClick = useCallback(async (det: Detection, e: React.MouseEvent) => {
+    e.stopPropagation();
+
+    // Pause
+    const v = videoRef.current;
+    if (v && !v.paused) {
+      v.pause();
       setPaused(true);
     }
-  }, []);
 
-  // Click on a detection box
-  const handleDetectionClick = useCallback(async (det: Detection) => {
-    // Pause video
-    const video = videoRef.current;
-    if (video && !video.paused) {
-      video.pause();
-      setPaused(true);
-    }
-
-    setSelectedDetection(det);
+    setSelectedDet(det);
     setAnalyzing(true);
-    setAnalysisResult(null);
+    setAnalysis(null);
 
-    // Capture the crop from the current frame
+    // Capture and crop
     const canvas = canvasRef.current;
+    const video = videoRef.current;
     if (!canvas || !video) { setAnalyzing(false); return; }
 
     const ctx = canvas.getContext("2d");
@@ -133,17 +153,15 @@ export function InteractiveCameraViewer({ camera, onClose }: InteractiveCameraVi
     canvas.height = video.videoHeight;
     ctx.drawImage(video, 0, 0);
 
-    // Crop the detection area
     const { x, y, w, h } = det.bbox;
-    const cropCanvas = document.createElement("canvas");
-    cropCanvas.width = Math.max(1, Math.round(w));
-    cropCanvas.height = Math.max(1, Math.round(h));
-    const cropCtx = cropCanvas.getContext("2d");
-    if (!cropCtx) { setAnalyzing(false); return; }
-    cropCtx.drawImage(canvas, x, y, w, h, 0, 0, cropCanvas.width, cropCanvas.height);
+    const crop = document.createElement("canvas");
+    crop.width = Math.max(1, Math.round(w));
+    crop.height = Math.max(1, Math.round(h));
+    const cctx = crop.getContext("2d");
+    if (!cctx) { setAnalyzing(false); return; }
+    cctx.drawImage(canvas, x, y, w, h, 0, 0, crop.width, crop.height);
 
-    // Send crop for analysis
-    cropCanvas.toBlob(async (blob) => {
+    crop.toBlob(async (blob) => {
       if (!blob) { setAnalyzing(false); return; }
       const form = new FormData();
       form.append("image", blob, "crop.jpg");
@@ -155,8 +173,7 @@ export function InteractiveCameraViewer({ camera, onClose }: InteractiveCameraVi
       try {
         const resp = await fetch(endpoint, { method: "POST", body: form });
         if (resp.ok) {
-          const result = await resp.json();
-          setAnalysisResult(result);
+          setAnalysis(await resp.json());
         }
       } catch (err) {
         console.error("Analysis failed:", err);
@@ -166,15 +183,12 @@ export function InteractiveCameraViewer({ camera, onClose }: InteractiveCameraVi
     }, "image/jpeg", 0.9);
   }, []);
 
-  // Map detection colors
-  const detColor = (cls: string) => {
-    switch (cls) {
-      case "person": return "#00f0ff";
-      case "vehicle": return "#00ff88";
-      case "bike": return "#ffaa00";
-      case "bag": return "#ff2d78";
-      default: return "#888";
-    }
+  const boxColor = (cls: string) => {
+    if (cls === "person") return "#00f0ff";
+    if (cls === "vehicle") return "#00ff88";
+    if (cls === "bike") return "#ffaa00";
+    if (cls === "bag") return "#ff2d78";
+    return "#888";
   };
 
   return (
@@ -184,36 +198,31 @@ export function InteractiveCameraViewer({ camera, onClose }: InteractiveCameraVi
       exit={{ opacity: 0 }}
       className="fixed inset-0 z-[9999] flex bg-[#030712]"
     >
-      {/* Video area -- left side */}
-      <div className="relative flex-1 flex flex-col">
-        {/* Top bar */}
-        <div className="flex h-12 items-center justify-between border-b border-[#00f0ff]/15 bg-[#020a18] px-4">
+      {/* Video area */}
+      <div className="relative flex-1 flex flex-col min-w-0">
+        {/* Header */}
+        <div className="flex h-11 shrink-0 items-center justify-between border-b border-[#00f0ff]/15 bg-[#020a18] px-4">
           <div className="flex items-center gap-3">
-            <span className="font-heading text-sm uppercase tracking-[0.15em] text-[#00f0ff]">
-              {camera.name}
-            </span>
+            <span className="font-heading text-sm uppercase tracking-[0.15em] text-[#00f0ff]">{camera.name}</span>
             <span className="rounded-sm border border-[#00f0ff]/20 bg-[#00f0ff]/5 px-2 py-0.5 font-data text-[10px] text-[#00f0ff]/70">
-              {camera.id.slice(0, 8)}
+              {camera.zone_id ?? camera.id.slice(0, 8)}
             </span>
+            {detections.length > 0 && (
+              <span className="font-data text-[10px] text-[#4a6a8a]">
+                {detections.length} detections
+              </span>
+            )}
           </div>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={togglePause}
-              className="rounded-sm border border-[#00f0ff]/20 bg-[#00f0ff]/5 p-1.5 text-[#00f0ff] hover:bg-[#00f0ff]/10"
-            >
-              {paused ? <Play className="size-4" /> : <Pause className="size-4" />}
-            </button>
-            <button
-              onClick={onClose}
-              className="rounded-sm border border-[#ff2d78]/30 bg-[#ff2d78]/10 p-1.5 text-[#ff2d78] hover:bg-[#ff2d78]/20"
-            >
-              <X className="size-4" />
-            </button>
-          </div>
+          <button
+            onClick={onClose}
+            className="rounded-sm border border-[#ff2d78]/30 bg-[#ff2d78]/10 p-1.5 text-[#ff2d78] hover:bg-[#ff2d78]/20"
+          >
+            <X className="size-4" />
+          </button>
         </div>
 
-        {/* Video + detection overlays */}
-        <div ref={containerRef} className="relative flex-1 overflow-hidden bg-black">
+        {/* Video + overlays */}
+        <div className="relative flex-1 bg-black cursor-pointer" onClick={onVideoClick}>
           <video
             ref={videoRef}
             src={videoUrl}
@@ -222,181 +231,161 @@ export function InteractiveCameraViewer({ camera, onClose }: InteractiveCameraVi
             loop
             muted
             playsInline
-            onLoadedMetadata={handleLoadedMetadata}
+            onCanPlay={onVideoReady}
             className="absolute inset-0 w-full h-full object-contain"
           />
-
-          {/* Hidden canvas for frame capture */}
           <canvas ref={canvasRef} className="hidden" />
 
-          {/* Interactive detection overlays */}
-          <svg
-            className="absolute inset-0 w-full h-full pointer-events-none"
-            viewBox={`0 0 ${videoSize.width} ${videoSize.height}`}
-            preserveAspectRatio="xMidYMid meet"
-          >
-            {detections.map((det, i) => {
-              const isSelected = selectedDetection?.track_id === det.track_id;
-              const color = detColor(det.object_class);
-              return (
-                <g key={det.track_id ?? i} className="pointer-events-auto cursor-pointer" onClick={() => handleDetectionClick(det)}>
-                  <rect
-                    x={det.bbox.x}
-                    y={det.bbox.y}
-                    width={det.bbox.w}
-                    height={det.bbox.h}
-                    stroke={color}
-                    strokeWidth={isSelected ? 3 : 2}
-                    fill={isSelected ? `${color}22` : "transparent"}
-                    rx={2}
-                    className="transition-all hover:fill-[rgba(0,240,255,0.1)]"
-                  />
-                  {/* Small label */}
-                  <text
-                    x={det.bbox.x + 4}
-                    y={det.bbox.y - 4}
-                    fill={color}
-                    fontSize={12}
-                    fontFamily="'JetBrains Mono', monospace"
-                    className="select-none"
+          {/* Detection boxes — clickable */}
+          {detections.length > 0 && (
+            <svg
+              className="absolute inset-0 w-full h-full"
+              viewBox={`0 0 ${videoSize.w} ${videoSize.h}`}
+              preserveAspectRatio="xMidYMid meet"
+              style={{ pointerEvents: "none" }}
+            >
+              {detections.map((det, i) => {
+                const selected = selectedDet?.track_id === det.track_id;
+                const color = boxColor(det.object_class);
+                return (
+                  <g
+                    key={i}
+                    style={{ pointerEvents: "all", cursor: "pointer" }}
+                    onClick={(e) => onDetClick(det, e)}
                   >
-                    {det.object_class} {(det.confidence * 100).toFixed(0)}%
-                  </text>
-                </g>
-              );
-            })}
-          </svg>
+                    <rect
+                      x={det.bbox.x} y={det.bbox.y}
+                      width={det.bbox.w} height={det.bbox.h}
+                      stroke={color} strokeWidth={selected ? 3 : 2}
+                      fill={selected ? `${color}33` : "transparent"}
+                    />
+                    <text
+                      x={det.bbox.x + 3} y={det.bbox.y - 5}
+                      fill={color} fontSize={11}
+                      fontFamily="'JetBrains Mono', monospace"
+                    >
+                      {det.object_class} {(det.confidence * 100).toFixed(0)}%
+                    </text>
+                  </g>
+                );
+              })}
+            </svg>
+          )}
 
-          {/* Paused indicator */}
+          {/* Paused banner */}
           {paused && (
-            <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 rounded-sm bg-[#ff2d78]/80 px-3 py-1 font-heading text-[10px] uppercase tracking-wider text-white">
-              PAUSED -- Click any detection to analyze
+            <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 rounded-sm bg-[#020a18]/90 border border-[#00f0ff]/20 px-4 py-1.5 font-heading text-[10px] uppercase tracking-wider text-[#00f0ff]">
+              PAUSED — click any box to analyze, click video to resume
             </div>
           )}
 
-          {/* Detection count HUD */}
-          <div className="absolute bottom-4 left-4 z-20 flex gap-2">
-            <div className="rounded-sm border border-white/10 bg-[#020a18]/80 px-3 py-1 backdrop-blur-sm">
-              <span className="font-heading text-[8px] uppercase tracking-wider text-[#4a6a8a]">DETECTIONS</span>
-              <p className="font-data text-sm text-[#00f0ff]">{detections.length}</p>
-            </div>
-            <div className="rounded-sm border border-white/10 bg-[#020a18]/80 px-3 py-1 backdrop-blur-sm">
-              <span className="font-heading text-[8px] uppercase tracking-wider text-[#4a6a8a]">PERSONS</span>
-              <p className="font-data text-sm text-[#00f0ff]">{detections.filter(d => d.object_class === "person").length}</p>
-            </div>
-            <div className="rounded-sm border border-white/10 bg-[#020a18]/80 px-3 py-1 backdrop-blur-sm">
-              <span className="font-heading text-[8px] uppercase tracking-wider text-[#4a6a8a]">VEHICLES</span>
-              <p className="font-data text-sm text-[#00ff88]">{detections.filter(d => d.object_class === "vehicle").length}</p>
-            </div>
-          </div>
-
           {/* LIVE indicator */}
           {!paused && (
-            <div className="absolute top-4 right-4 z-20 flex items-center gap-1.5">
-              <span className="inline-block size-2.5 animate-pulse rounded-full bg-[#ff2d78] shadow-[0_0_8px_#ff2d78]" />
+            <div className="absolute top-3 right-3 z-20 flex items-center gap-1.5">
+              <span className="inline-block size-2 animate-pulse rounded-full bg-[#ff2d78] shadow-[0_0_6px_#ff2d78]" />
               <span className="font-heading text-[10px] tracking-wider text-[#ff2d78]">LIVE</span>
+            </div>
+          )}
+
+          {/* HUD stats */}
+          <div className="absolute bottom-3 left-3 z-20 flex gap-2">
+            <HudStat label="PERSONS" value={detections.filter(d => d.object_class === "person").length} color="#00f0ff" />
+            <HudStat label="VEHICLES" value={detections.filter(d => d.object_class === "vehicle").length} color="#00ff88" />
+            <HudStat label="BIKES" value={detections.filter(d => d.object_class === "bike").length} color="#ffaa00" />
+          </div>
+
+          {/* Error indicator */}
+          {error && (
+            <div className="absolute bottom-3 right-3 z-20 rounded-sm bg-[#ff2d78]/20 px-2 py-1 font-data text-[9px] text-[#ff2d78]">
+              {error}
             </div>
           )}
         </div>
       </div>
 
-      {/* Analysis panel -- right side */}
+      {/* Analysis side panel */}
       <AnimatePresence>
-        {(selectedDetection || analysisResult) && (
+        {(selectedDet || analysis) && (
           <motion.div
             initial={{ width: 0, opacity: 0 }}
-            animate={{ width: 380, opacity: 1 }}
+            animate={{ width: 360, opacity: 1 }}
             exit={{ width: 0, opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            className="h-full border-l border-[#00f0ff]/15 bg-[#020a18] overflow-y-auto"
+            className="h-full shrink-0 border-l border-[#00f0ff]/15 bg-[#020a18] overflow-y-auto overflow-x-hidden"
           >
-            <div className="p-4 space-y-4">
-              {/* Header */}
+            <div className="w-[360px] p-4 space-y-4">
               <div className="flex items-center justify-between">
                 <h3 className="font-heading text-xs uppercase tracking-widest text-[#00f0ff]">
-                  {selectedDetection?.object_class === "person" ? "PERSON ANALYSIS" : "VEHICLE ANALYSIS"}
+                  {selectedDet?.object_class === "person" ? "PERSON ANALYSIS" : "VEHICLE ANALYSIS"}
                 </h3>
-                <button
-                  onClick={() => { setSelectedDetection(null); setAnalysisResult(null); }}
-                  className="text-[#4a6a8a] hover:text-white"
-                >
+                <button onClick={() => { setSelectedDet(null); setAnalysis(null); }} className="text-[#4a6a8a] hover:text-white">
                   <X className="size-3.5" />
                 </button>
               </div>
 
-              {/* Detection info */}
-              {selectedDetection && (
-                <div className="space-y-2">
-                  <div className="grid grid-cols-2 gap-2">
-                    <InfoCell label="TYPE" value={selectedDetection.object_class.toUpperCase()} color={detColor(selectedDetection.object_class)} />
-                    <InfoCell label="CONFIDENCE" value={`${(selectedDetection.confidence * 100).toFixed(1)}%`} />
-                    <InfoCell label="POSITION" value={`${Math.round(selectedDetection.bbox.x)}, ${Math.round(selectedDetection.bbox.y)}`} />
-                    <InfoCell label="SIZE" value={`${Math.round(selectedDetection.bbox.w)} x ${Math.round(selectedDetection.bbox.h)}`} />
-                  </div>
+              {selectedDet && (
+                <div className="grid grid-cols-2 gap-2">
+                  <Cell label="TYPE" value={selectedDet.object_class.toUpperCase()} color={boxColor(selectedDet.object_class)} />
+                  <Cell label="CONFIDENCE" value={`${(selectedDet.confidence * 100).toFixed(1)}%`} />
+                  <Cell label="POSITION" value={`${Math.round(selectedDet.bbox.x)}, ${Math.round(selectedDet.bbox.y)}`} />
+                  <Cell label="SIZE" value={`${Math.round(selectedDet.bbox.w)} x ${Math.round(selectedDet.bbox.h)}`} />
                 </div>
               )}
 
-              {/* Loading */}
               {analyzing && (
                 <div className="flex items-center gap-2 py-4">
                   <div className="size-4 animate-spin rounded-full border-2 border-[#00f0ff]/30 border-t-[#00f0ff]" />
-                  <span className="font-data text-xs text-[#4a6a8a]">Analyzing with AI models...</span>
+                  <span className="font-data text-xs text-[#4a6a8a]">Running AI analysis on H200...</span>
                 </div>
               )}
 
-              {/* Analysis results */}
-              {analysisResult && (
+              {analysis && (
                 <div className="space-y-3">
                   <div className="h-px bg-gradient-to-r from-[#00f0ff]/30 to-transparent" />
 
-                  {/* Face analysis */}
-                  {analysisResult.face && (
+                  {analysis.face && (
                     <div className="space-y-2">
                       <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#00ff88]">FACE DETECTED</h4>
                       <div className="grid grid-cols-2 gap-2">
-                        <InfoCell label="QUALITY" value={`${(analysisResult.face.quality_score * 100).toFixed(0)}%`} />
-                        <InfoCell label="EMBEDDING" value={analysisResult.face.embedding ? `${analysisResult.face.embedding.length}-d` : "N/A"} />
-                        <InfoCell label="FACE POS" value={`${Math.round(analysisResult.face.face_bbox.x)}, ${Math.round(analysisResult.face.face_bbox.y)}`} />
-                        <InfoCell label="FACE SIZE" value={`${Math.round(analysisResult.face.face_bbox.w)} x ${Math.round(analysisResult.face.face_bbox.h)}`} />
+                        <Cell label="QUALITY" value={`${(analysis.face.quality_score * 100).toFixed(0)}%`} />
+                        <Cell label="EMBEDDING" value={analysis.face.embedding ? `${analysis.face.embedding.length}-d vector` : "N/A"} />
+                        <Cell label="FACE POS" value={`${Math.round(analysis.face.face_bbox.x)}, ${Math.round(analysis.face.face_bbox.y)}`} />
+                        <Cell label="FACE SIZE" value={`${Math.round(analysis.face.face_bbox.w)} x ${Math.round(analysis.face.face_bbox.h)}`} />
                       </div>
-                      {analysisResult.face.embedding && (
+                      {analysis.face.embedding && (
                         <p className="font-data text-[9px] text-[#4a6a8a]">
-                          Face embedding captured -- can be used for search and matching
+                          512-d face embedding captured — searchable across all cameras
                         </p>
                       )}
                     </div>
                   )}
 
-                  {/* Plate analysis */}
-                  {analysisResult.plate && (
+                  {analysis.plate && (
                     <div className="space-y-2">
-                      <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#00ff88]">PLATE DETECTED</h4>
+                      <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#00ff88]">LICENSE PLATE</h4>
                       <div className="rounded-sm border border-[#00ff88]/20 bg-[#00ff88]/5 p-3 text-center">
-                        <span className="font-data text-xl text-[#00ff88]">{analysisResult.plate.plate_text}</span>
+                        <span className="font-data text-2xl tracking-wider text-[#00ff88]">{analysis.plate.plate_text}</span>
                       </div>
                       <div className="grid grid-cols-2 gap-2">
-                        <InfoCell label="CONFIDENCE" value={`${(analysisResult.plate.confidence * 100).toFixed(0)}%`} />
-                        <InfoCell label="PLATE POS" value={`${Math.round(analysisResult.plate.plate_bbox.x)}, ${Math.round(analysisResult.plate.plate_bbox.y)}`} />
+                        <Cell label="OCR CONFIDENCE" value={`${(analysis.plate.confidence * 100).toFixed(0)}%`} />
+                        <Cell label="PLATE POS" value={`${Math.round(analysis.plate.plate_bbox.x)}, ${Math.round(analysis.plate.plate_bbox.y)}`} />
                       </div>
                     </div>
                   )}
 
-                  {/* No face/plate found */}
-                  {!analysisResult.face && !analysisResult.plate && (
+                  {!analysis.face && !analysis.plate && (
                     <p className="py-4 text-center font-data text-xs text-[#4a6a8a]">
-                      {analysisResult.type === "person" ? "No face detected in this crop" : "No plate detected in this crop"}
+                      {analysis.type === "person" ? "No face detected in this crop — person may be facing away or occluded" : "No license plate detected in this crop"}
                     </p>
                   )}
 
-                  {/* Camera info */}
                   <div className="h-px bg-gradient-to-r from-[#00f0ff]/20 to-transparent" />
                   <div className="space-y-2">
-                    <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#4a6a8a]">SOURCE</h4>
+                    <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#4a6a8a]">SOURCE CAMERA</h4>
                     <div className="grid grid-cols-2 gap-2">
-                      <InfoCell label="CAMERA" value={camera.name} />
-                      <InfoCell label="ZONE" value={camera.zone_id ?? "N/A"} />
-                      <InfoCell label="STATUS" value={camera.status.toUpperCase()} />
-                      <InfoCell label="COORDS" value={`${camera.location_lat.toFixed(4)}, ${camera.location_lng.toFixed(4)}`} />
+                      <Cell label="CAMERA" value={camera.name} />
+                      <Cell label="ZONE" value={camera.zone_id ?? "N/A"} />
+                      <Cell label="STATUS" value={camera.status.toUpperCase()} />
+                      <Cell label="LOCATION" value={`${camera.location_lat.toFixed(4)}, ${camera.location_lng.toFixed(4)}`} />
                     </div>
                   </div>
                 </div>
@@ -409,11 +398,21 @@ export function InteractiveCameraViewer({ camera, onClose }: InteractiveCameraVi
   );
 }
 
-function InfoCell({ label, value, color }: { label: string; value: string; color?: string }) {
+function Cell({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
     <div className="rounded-sm border border-white/5 bg-white/[0.02] px-2.5 py-1.5">
       <span className="font-heading text-[7px] uppercase tracking-[0.2em] text-[#4a6a8a]">{label}</span>
       <p className="font-data text-[11px] truncate" style={{ color: color ?? "#e0f0ff" }}>{value}</p>
+    </div>
+  );
+}
+
+function HudStat({ label, value, color }: { label: string; value: number; color: string }) {
+  if (value === 0) return null;
+  return (
+    <div className="rounded-sm border border-white/10 bg-[#020a18]/80 px-2.5 py-1 backdrop-blur-sm">
+      <span className="font-heading text-[7px] uppercase tracking-wider text-[#4a6a8a]">{label}</span>
+      <p className="font-data text-sm" style={{ color }}>{value}</p>
     </div>
   );
 }

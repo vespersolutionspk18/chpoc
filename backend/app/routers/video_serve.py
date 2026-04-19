@@ -4,7 +4,8 @@ import logging
 import httpx
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Form, UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
+from starlette.responses import StreamingResponse as StarletteStreamingResponse
 
 from app.core.config import settings
 
@@ -29,7 +30,16 @@ async def get_video_file(camera_id: str):
     video_path = Path(settings.VIDEO_DIR) / video_name
     if not video_path.exists():
         raise HTTPException(404, f"Video file not found: {video_name}")
-    return FileResponse(str(video_path), media_type="video/mp4")
+    return FileResponse(
+        str(video_path),
+        media_type="video/mp4",
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Range",
+            "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, Content-Length",
+        },
+    )
 
 
 @router.post("/detect-frame")
@@ -39,15 +49,18 @@ async def detect_frame(
 ):
     """Send a frame to AI service for detection. Returns detection boxes."""
     contents = await image.read()
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{settings.AI_SERVICE_URL}/detect",
-            files={"image": ("frame.jpg", contents, "image/jpeg")},
-            data={"camera_id": camera_id, "confidence": "0.3"},
-            timeout=10.0,
-        )
-        if resp.status_code == 200:
-            return resp.json()
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{settings.AI_SERVICE_URL}/detect",
+                files={"image": ("frame.jpg", contents, "image/jpeg")},
+                data={"camera_id": camera_id, "confidence": "0.3"},
+                timeout=10.0,
+            )
+            if resp.status_code == 200:
+                return resp.json()
+    except Exception as e:
+        logger.warning("detect-frame failed: %s", e)
     return []
 
 

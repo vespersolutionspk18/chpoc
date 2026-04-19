@@ -43,7 +43,6 @@ export function CameraFeedCard({
         {!streamError ? (
           <video
             src={`${API_URL}/api/video/file/${camera.id}`}
-            crossOrigin="anonymous"
             autoPlay
             loop
             muted
