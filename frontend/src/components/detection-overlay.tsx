@@ -1,9 +1,8 @@
 "use client";
 
-import type { Detection } from "@/lib/types";
-
 interface DetectionOverlayProps {
-  detections: Detection[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  detections: any[];
   width: number;
   height: number;
 }
@@ -11,9 +10,12 @@ interface DetectionOverlayProps {
 const typeColors: Record<string, string> = {
   person: "#00f0ff",
   vehicle: "#00ff88",
+  bike: "#ffaa00",
+  bag: "#ff2d78",
 };
 
-function colorForType(objectType: string): string {
+function colorForType(objectType: unknown): string {
+  if (!objectType || typeof objectType !== "string") return "#ffaa00";
   return typeColors[objectType.toLowerCase()] ?? "#ffaa00";
 }
 
@@ -31,8 +33,15 @@ export function DetectionOverlay({
       preserveAspectRatio="none"
     >
       {detections.map((det, idx) => {
-        const { x, y: y1, width: boxW, height: boxH } = det.bbox;
-        const color = colorForType(det.object_type);
+        const bbox = det?.bbox;
+        if (!bbox) return null;
+
+        const x = Number(bbox.x ?? 0);
+        const y1 = Number(bbox.y ?? 0);
+        const boxW = Number(bbox.width ?? bbox.w ?? 50);
+        const boxH = Number(bbox.height ?? bbox.h ?? 50);
+        const objType = det.object_class ?? det.object_type ?? "other";
+        const color = colorForType(objType);
 
         return (
           <rect

@@ -274,14 +274,11 @@ export default function LiveViewPage() {
 
             {/* Camera feed -- fills all remaining space */}
             <div className="relative flex-1 overflow-hidden bg-gradient-to-br from-[#0a1525] to-[#060d1a]">
-              {/* Grid pattern */}
-              <div className="grid-lines pointer-events-none absolute inset-0 opacity-15" />
-
-              {/* Detection boxes from live data */}
-              <DetectionOverlay
-                detections={fullscreenDetections.slice(0, 20)}
-                width={1920}
-                height={1080}
+              {/* MJPEG video stream with detection overlays drawn server-side */}
+              <img
+                src={`${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"}/api/stream/${fullscreenCamera.id}`}
+                alt={fullscreenCamera.name}
+                className="absolute inset-0 w-full h-full object-cover"
               />
 
               {/* HUD: top-left -- camera name */}
