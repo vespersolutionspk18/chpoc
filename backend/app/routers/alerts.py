@@ -13,7 +13,7 @@ from app.schemas.common import AlertSeverityEnum, AlertStatusEnum, AlertTypeEnum
 router = APIRouter(prefix="/alerts", tags=["alerts"])
 
 
-@router.get("/", response_model=list[AlertSchema])
+@router.get("", response_model=list[AlertSchema])
 async def list_alerts(
     alert_type: AlertTypeEnum | None = None,
     severity: AlertSeverityEnum | None = None,

@@ -12,7 +12,7 @@ from app.schemas.common import EventProfileCreate, EventProfileUpdate
 router = APIRouter(prefix="/events", tags=["events"])
 
 
-@router.get("/", response_model=list[EventProfileSchema])
+@router.get("", response_model=list[EventProfileSchema])
 async def list_events(
     status: str | None = None,
     db: AsyncSession = Depends(get_db),
@@ -24,7 +24,7 @@ async def list_events(
     return result.scalars().all()
 
 
-@router.post("/", response_model=EventProfileSchema, status_code=201)
+@router.post("", response_model=EventProfileSchema, status_code=201)
 async def create_event(data: EventProfileCreate, db: AsyncSession = Depends(get_db)):
     event = EventProfile(**data.model_dump())
     db.add(event)

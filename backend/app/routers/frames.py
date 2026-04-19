@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/frames", tags=["frames"])
 
 
-@router.get("/")
+@router.get("")
 async def get_all_frames(r: aioredis.Redis = Depends(get_redis)):
     """Get latest detection data for all active cameras."""
     # Scan for frame:* keys in Redis

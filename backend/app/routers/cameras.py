@@ -12,7 +12,7 @@ from app.schemas.common import CameraCreate, CameraUpdate
 router = APIRouter(prefix="/cameras", tags=["cameras"])
 
 
-@router.get("/", response_model=list[CameraSchema])
+@router.get("", response_model=list[CameraSchema])
 async def list_cameras(
     status: str | None = None,
     zone_id: str | None = None,
@@ -36,7 +36,7 @@ async def get_camera(camera_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     return camera
 
 
-@router.post("/", response_model=CameraSchema, status_code=201)
+@router.post("", response_model=CameraSchema, status_code=201)
 async def create_camera(data: CameraCreate, db: AsyncSession = Depends(get_db)):
     camera = Camera(**data.model_dump())
     db.add(camera)
