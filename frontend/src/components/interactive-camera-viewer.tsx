@@ -92,13 +92,20 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
     }
   }, [camera.id, captureFrame]);
 
-  // Poll detections every 2.5 seconds while playing
+  // Poll detections — wait for each request to complete before starting next
   useEffect(() => {
     if (!videoReady || paused) return;
-    // Run once immediately
-    runDetection();
-    const interval = setInterval(runDetection, 2500);
-    return () => clearInterval(interval);
+    let active = true;
+
+    async function loop() {
+      while (active) {
+        await runDetection();
+        // Wait 1 second between detection requests (actual detection takes ~3s)
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
+    loop();
+    return () => { active = false; };
   }, [videoReady, paused, runDetection]);
 
   // Video loaded
