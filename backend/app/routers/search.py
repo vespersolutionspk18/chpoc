@@ -101,18 +101,37 @@ async def search_by_attributes(
     query: AttributeSearchQuery,
     db: AsyncSession = Depends(get_db),
 ):
-    """Search tracks by person/vehicle attribute descriptions via AI service."""
-    matches = await ai_client.search_by_attributes(query.attributes)
+    """Search tracks by person/vehicle attributes stored in the JSON attributes column.
+
+    Searches the PostgreSQL JSONB field directly. Supported attribute keys include:
+    upper_color, lower_color, hat, glasses, bag, backpack, vehicle_color, vehicle_type.
+    """
+    stmt = select(Track).where(Track.attributes.isnot(None))
+
+    if query.object_type:
+        stmt = stmt.where(Track.object_type == query.object_type.value)
+    if query.camera_ids:
+        stmt = stmt.where(Track.camera_id.in_(query.camera_ids))
+    if query.start_time:
+        stmt = stmt.where(Track.start_time >= query.start_time)
+    if query.end_time:
+        stmt = stmt.where(Track.start_time <= query.end_time)
+
+    # Filter by each attribute key/value in the JSON column
+    for key, value in query.attributes.items():
+        if isinstance(value, str):
+            # Use JSON containment for string values
+            stmt = stmt.where(Track.attributes[key].as_string() == value)
+        elif isinstance(value, bool):
+            stmt = stmt.where(Track.attributes[key].as_boolean() == value)
+
+    stmt = stmt.order_by(Track.start_time.desc()).limit(query.limit)
+
+    result = await db.execute(stmt)
+    tracks = result.scalars().all()
 
     results = []
-    for match in matches:
-        track_id = match.get("track_id")
-        if not track_id:
-            continue
-        result = await db.execute(select(Track).where(Track.id == track_id))
-        track = result.scalar_one_or_none()
-        if not track:
-            continue
+    for track in tracks:
         cam_result = await db.execute(select(Camera).where(Camera.id == track.camera_id))
         cam = cam_result.scalar_one_or_none()
         results.append(
@@ -122,8 +141,7 @@ async def search_by_attributes(
                 camera_name=cam.name if cam else None,
                 timestamp=track.start_time,
                 object_type=track.object_type,
-                confidence=match.get("confidence", 0.0),
-                thumbnail_url=match.get("thumbnail_url"),
+                confidence=track.attributes.get("confidence", 0.0) if track.attributes else 0.0,
                 attributes=track.attributes,
             )
         )

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Check, X, ArrowUp } from "lucide-react";
 
@@ -32,7 +32,16 @@ import {
 } from "@/components/ui/sheet";
 import { Separator } from "@/components/ui/separator";
 import { MOCK_ALERTS, MOCK_CAMERAS } from "@/lib/mock-data";
-import type { Alert, AlertType, AlertSeverity, AlertStatus } from "@/lib/types";
+import {
+  getAlerts,
+  getCameras,
+  acknowledgeAlert,
+  dismissAlert,
+  escalateAlert,
+} from "@/lib/api";
+import { useAlertWebSocket } from "@/hooks/use-alert-websocket";
+import { useAlertStore } from "@/lib/stores/use-alert-store";
+import type { Alert, AlertType, AlertSeverity, AlertStatus, Camera } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -89,12 +98,51 @@ export default function AlertsPage() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [cameraFilter, setCameraFilter] = useState<string>("all");
 
+  // Data state
+  const [alerts, setAlerts] = useState<Alert[]>(MOCK_ALERTS);
+  const [cameras, setCameras] = useState<Camera[]>(MOCK_CAMERAS);
+  const [loading, setLoading] = useState(true);
+
   // Selected alert for detail sheet
   const [selectedAlert, setSelectedAlert] = useState<Alert | null>(null);
 
+  // Connect WebSocket for real-time alerts
+  useAlertWebSocket();
+  const wsAlerts = useAlertStore((s) => s.alerts);
+
+  // Merge: use WS alerts if populated, else use fetched
+  const allAlerts = wsAlerts.length > 0 ? wsAlerts : alerts;
+
+  // Fetch real data on mount
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const [alertsData, camerasData] = await Promise.all([
+          getAlerts(),
+          getCameras(),
+        ]);
+        if (!cancelled) {
+          setAlerts(alertsData);
+          setCameras(camerasData);
+          // Seed alert store if WS alerts are empty
+          if (useAlertStore.getState().alerts.length === 0) {
+            useAlertStore.getState().setAlerts(alertsData);
+          }
+        }
+      } catch {
+        // Keep mock data
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, []);
+
   // Filtered alerts
   const filteredAlerts = useMemo(() => {
-    return MOCK_ALERTS.filter((alert) => {
+    return allAlerts.filter((alert) => {
       if (typeFilter !== "all" && alert.alert_type !== typeFilter) return false;
       if (severityFilter !== "all" && alert.severity !== severityFilter)
         return false;
@@ -103,13 +151,46 @@ export default function AlertsPage() {
         return false;
       return true;
     });
-  }, [typeFilter, severityFilter, statusFilter, cameraFilter]);
+  }, [allAlerts, typeFilter, severityFilter, statusFilter, cameraFilter]);
 
   function clearFilters() {
     setTypeFilter("all");
     setSeverityFilter("all");
     setStatusFilter("all");
     setCameraFilter("all");
+  }
+
+  async function handleAcknowledge(alertId: string) {
+    try {
+      await acknowledgeAlert(alertId);
+      setAlerts((prev) =>
+        prev.map((a) => (a.id === alertId ? { ...a, status: "acknowledged" as AlertStatus } : a))
+      );
+    } catch {
+      console.warn("Acknowledge failed for:", alertId);
+    }
+  }
+
+  async function handleDismiss(alertId: string) {
+    try {
+      await dismissAlert(alertId);
+      setAlerts((prev) =>
+        prev.map((a) => (a.id === alertId ? { ...a, status: "dismissed" as AlertStatus } : a))
+      );
+    } catch {
+      console.warn("Dismiss failed for:", alertId);
+    }
+  }
+
+  async function handleEscalate(alertId: string) {
+    try {
+      await escalateAlert(alertId);
+      setAlerts((prev) =>
+        prev.map((a) => (a.id === alertId ? { ...a, status: "escalated" as AlertStatus } : a))
+      );
+    } catch {
+      console.warn("Escalate failed for:", alertId);
+    }
   }
 
   return (
@@ -125,7 +206,7 @@ export default function AlertsPage() {
           variant="outline"
           className="border-[#ff2d78]/30 bg-[#ff2d78]/10 font-data text-xs tabular-nums text-[#ff2d78]"
         >
-          {MOCK_ALERTS.length} THREATS
+          {allAlerts.length} THREATS
         </Badge>
       </PageHeader>
 
@@ -179,7 +260,7 @@ export default function AlertsPage() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Cameras</SelectItem>
-            {MOCK_CAMERAS.map((cam) => (
+            {cameras.map((cam) => (
               <SelectItem key={cam.id} value={cam.id}>
                 {cam.name}
               </SelectItem>
@@ -245,9 +326,7 @@ export default function AlertsPage() {
                         variant="ghost"
                         size="icon"
                         className="size-7 text-[#00ff88]/60 hover:text-[#00ff88] hover:bg-[#00ff88]/10"
-                        onClick={() =>
-                          console.log("Acknowledge:", alert.id)
-                        }
+                        onClick={() => handleAcknowledge(alert.id)}
                       >
                         <Check className="size-3.5" />
                       </Button>
@@ -255,7 +334,7 @@ export default function AlertsPage() {
                         variant="ghost"
                         size="icon"
                         className="size-7 text-slate-500 hover:text-slate-300 hover:bg-white/5"
-                        onClick={() => console.log("Dismiss:", alert.id)}
+                        onClick={() => handleDismiss(alert.id)}
                       >
                         <X className="size-3.5" />
                       </Button>
@@ -263,9 +342,7 @@ export default function AlertsPage() {
                         variant="ghost"
                         size="icon"
                         className="size-7 text-[#ffaa00]/60 hover:text-[#ffaa00] hover:bg-[#ffaa00]/10"
-                        onClick={() =>
-                          console.log("Escalate:", alert.id)
-                        }
+                        onClick={() => handleEscalate(alert.id)}
                       >
                         <ArrowUp className="size-3.5" />
                       </Button>
@@ -366,9 +443,7 @@ export default function AlertsPage() {
                     size="sm"
                     variant="outline"
                     className="flex-1 gap-1.5 rounded-sm border-[#00ff88]/20 font-heading text-[10px] uppercase tracking-wider text-[#00ff88] hover:bg-[#00ff88]/10"
-                    onClick={() =>
-                      console.log("Acknowledge:", selectedAlert.id)
-                    }
+                    onClick={() => handleAcknowledge(selectedAlert.id)}
                   >
                     <Check className="size-3.5" />
                     ACK
@@ -377,9 +452,7 @@ export default function AlertsPage() {
                     size="sm"
                     variant="outline"
                     className="flex-1 gap-1.5 rounded-sm border-slate-500/20 font-heading text-[10px] uppercase tracking-wider text-slate-400 hover:bg-white/5"
-                    onClick={() =>
-                      console.log("Dismiss:", selectedAlert.id)
-                    }
+                    onClick={() => handleDismiss(selectedAlert.id)}
                   >
                     <X className="size-3.5" />
                     DISMISS
@@ -388,9 +461,7 @@ export default function AlertsPage() {
                     size="sm"
                     variant="outline"
                     className="flex-1 gap-1.5 rounded-sm border-[#ffaa00]/20 font-heading text-[10px] uppercase tracking-wider text-[#ffaa00] hover:bg-[#ffaa00]/10"
-                    onClick={() =>
-                      console.log("Escalate:", selectedAlert.id)
-                    }
+                    onClick={() => handleEscalate(selectedAlert.id)}
                   >
                     <ArrowUp className="size-3.5" />
                     ESCALATE

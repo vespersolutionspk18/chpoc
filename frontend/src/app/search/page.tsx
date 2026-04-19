@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import dynamic from "next/dynamic";
 import { motion } from "framer-motion";
 import {
@@ -10,6 +10,7 @@ import {
   SlidersHorizontal,
   User,
   Car,
+  Loader2,
 } from "lucide-react";
 
 import { PageHeader } from "@/components/page-header";
@@ -33,7 +34,13 @@ import {
 } from "@/components/ui/select";
 
 import { MOCK_CAMERAS, MOCK_SEARCH_RESULTS } from "@/lib/mock-data";
-import type { SearchResult } from "@/lib/types";
+import {
+  getCameras,
+  searchByFace,
+  searchByPlate,
+  searchByAttributes,
+} from "@/lib/api";
+import type { Camera, SearchResult } from "@/lib/types";
 
 const CityMap = dynamic(() => import("@/components/city-map"), { ssr: false });
 
@@ -60,8 +67,8 @@ const VEHICLE_TYPES = [
 ] as const;
 
 // Simulated track path points for a selected result
-function getTrackPath(result: SearchResult) {
-  const cam = MOCK_CAMERAS.find((c) => c.id === result.camera_id);
+function getTrackPath(result: SearchResult, cameras: Camera[]) {
+  const cam = cameras.find((c) => c.id === result.camera_id);
   if (!cam) return [];
   return [
     { lat: cam.location_lat - 0.002, lng: cam.location_lng - 0.003 },
@@ -100,6 +107,7 @@ function SectionTitle({ children }: { children: string }) {
 
 export default function SearchPage() {
   const [facePreview, setFacePreview] = useState<string | null>(null);
+  const [faceFile, setFaceFile] = useState<File | null>(null);
   const [plateText, setPlateText] = useState("");
   const [cameraFilter, setCameraFilter] = useState("all");
   const [startDate, setStartDate] = useState("2026-04-19");
@@ -107,6 +115,10 @@ export default function SearchPage() {
   const [selectedResult, setSelectedResult] = useState<SearchResult | null>(
     null
   );
+  const [results, setResults] = useState<SearchResult[]>(MOCK_SEARCH_RESULTS);
+  const [cameras, setCameras] = useState<Camera[]>(MOCK_CAMERAS);
+  const [searching, setSearching] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
 
   // Attribute search state
   const [upperColor, setUpperColor] = useState("none");
@@ -118,15 +130,103 @@ export default function SearchPage() {
   const [vehicleType, setVehicleType] = useState("any");
   const [vehicleColor, setVehicleColor] = useState("none");
 
+  // Fetch cameras from API
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const camerasData = await getCameras();
+        if (!cancelled) setCameras(camerasData);
+      } catch {
+        // Keep mock cameras
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, []);
+
   const trackPath = useMemo(() => {
     if (!selectedResult) return [];
-    return getTrackPath(selectedResult);
-  }, [selectedResult]);
+    return getTrackPath(selectedResult, cameras);
+  }, [selectedResult, cameras]);
 
   function handleFaceFileSelect(file: File) {
     const url = URL.createObjectURL(file);
     setFacePreview(url);
+    setFaceFile(file);
   }
+
+  // Build camera IDs array for API
+  function getSelectedCameraIds(): string[] | undefined {
+    if (cameraFilter === "all") return undefined;
+    return [cameraFilter];
+  }
+
+  const handleFaceSearch = useCallback(async () => {
+    if (!faceFile) return;
+    setSearching(true);
+    setHasSearched(true);
+    try {
+      const res = await searchByFace(
+        faceFile,
+        getSelectedCameraIds(),
+        `${startDate}T00:00:00Z`,
+        `${endDate}T23:59:59Z`
+      );
+      setResults(res);
+    } catch {
+      // Keep current results
+    } finally {
+      setSearching(false);
+    }
+  }, [faceFile, cameraFilter, startDate, endDate]);
+
+  const handlePlateSearch = useCallback(async () => {
+    if (!plateText.trim()) return;
+    setSearching(true);
+    setHasSearched(true);
+    try {
+      const res = await searchByPlate({
+        plate_text: plateText.trim(),
+        camera_ids: getSelectedCameraIds(),
+        start_time: `${startDate}T00:00:00Z`,
+        end_time: `${endDate}T23:59:59Z`,
+      });
+      setResults(res);
+    } catch {
+      // Keep current results
+    } finally {
+      setSearching(false);
+    }
+  }, [plateText, cameraFilter, startDate, endDate]);
+
+  const handleAttributeSearch = useCallback(async () => {
+    setSearching(true);
+    setHasSearched(true);
+    try {
+      const attrs: Record<string, unknown> = {};
+      if (upperColor !== "none") attrs.upper_color = upperColor;
+      if (lowerColor !== "none") attrs.lower_color = lowerColor;
+      if (hat !== "any") attrs.hat = hat === "yes";
+      if (glasses !== "any") attrs.glasses = glasses === "yes";
+      if (bag !== "any") attrs.bag = bag === "yes";
+      if (backpack !== "any") attrs.backpack = backpack === "yes";
+      if (vehicleType !== "any") attrs.vehicle_type = vehicleType;
+      if (vehicleColor !== "none") attrs.color = vehicleColor;
+
+      const res = await searchByAttributes({
+        attributes: attrs,
+        camera_ids: getSelectedCameraIds(),
+        start_time: `${startDate}T00:00:00Z`,
+        end_time: `${endDate}T23:59:59Z`,
+      });
+      setResults(res);
+    } catch {
+      // Keep current results
+    } finally {
+      setSearching(false);
+    }
+  }, [upperColor, lowerColor, hat, glasses, bag, backpack, vehicleType, vehicleColor, cameraFilter, startDate, endDate]);
 
   function renderObjectTypeBadge(type: string) {
     const config: Record<string, { className: string; icon: typeof User }> = {
@@ -173,20 +273,17 @@ export default function SearchPage() {
   const tabTriggerClass =
     "rounded-none border border-[#00f0ff]/15 bg-transparent px-4 py-2 font-heading text-[10px] uppercase tracking-[0.15em] text-[#4a6a8a] transition-all data-[state=active]:bg-[#00f0ff]/10 data-[state=active]:text-[#00f0ff] data-[state=active]:border-[#00f0ff]/40 data-[state=active]:shadow-[0_0_10px_rgba(0,240,255,0.15)] hover:text-[#00f0ff]/60";
 
-  // Select class for attribute selects
-  const selectClass = "glass-deep border-[#00f0ff]/10 font-data text-sm";
-
   const cameraFilterRow = (
     <div className="flex flex-wrap items-end gap-4">
       <div className="space-y-1.5">
         <label className="font-heading text-[9px] uppercase tracking-[0.2em] text-[#4a6a8a]">Camera</label>
         <Select value={cameraFilter} onValueChange={(v) => v && setCameraFilter(v)}>
-          <SelectTrigger className={`w-[220px] ${selectClass}`}>
+          <SelectTrigger className="w-[220px] glass-deep border-[#00f0ff]/10 font-data text-sm">
             <SelectValue placeholder="All cameras" />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Cameras</SelectItem>
-            {MOCK_CAMERAS.map((cam) => (
+            {cameras.map((cam) => (
               <SelectItem key={cam.id} value={cam.id}>
                 {cam.name}
               </SelectItem>
@@ -202,6 +299,8 @@ export default function SearchPage() {
       />
     </div>
   );
+
+  const displayResults = hasSearched ? results : MOCK_SEARCH_RESULTS;
 
   return (
     <motion.div
@@ -239,9 +338,13 @@ export default function SearchPage() {
             preview={facePreview}
           />
           {cameraFilterRow}
-          <Button className="gap-2 rounded-sm border border-[#00f0ff]/30 bg-[#00f0ff]/10 font-heading text-[10px] uppercase tracking-wider text-[#00f0ff] hover:bg-[#00f0ff]/20 hover:shadow-[0_0_15px_rgba(0,240,255,0.2)]">
-            <Search className="size-3.5" />
-            INITIATE SCAN
+          <Button
+            disabled={searching || !faceFile}
+            onClick={handleFaceSearch}
+            className="gap-2 rounded-sm border border-[#00f0ff]/30 bg-[#00f0ff]/10 font-heading text-[10px] uppercase tracking-wider text-[#00f0ff] hover:bg-[#00f0ff]/20 hover:shadow-[0_0_15px_rgba(0,240,255,0.2)]"
+          >
+            {searching ? <Loader2 className="size-3.5 animate-spin" /> : <Search className="size-3.5" />}
+            {searching ? "SCANNING..." : "INITIATE SCAN"}
           </Button>
         </TabsContent>
 
@@ -259,9 +362,13 @@ export default function SearchPage() {
             />
           </div>
           {cameraFilterRow}
-          <Button className="gap-2 rounded-sm border border-[#ffaa00]/30 bg-[#ffaa00]/10 font-heading text-[10px] uppercase tracking-wider text-[#ffaa00] hover:bg-[#ffaa00]/20 hover:shadow-[0_0_15px_rgba(255,170,0,0.2)]">
-            <Search className="size-3.5" />
-            TRACE
+          <Button
+            disabled={searching || !plateText.trim()}
+            onClick={handlePlateSearch}
+            className="gap-2 rounded-sm border border-[#ffaa00]/30 bg-[#ffaa00]/10 font-heading text-[10px] uppercase tracking-wider text-[#ffaa00] hover:bg-[#ffaa00]/20 hover:shadow-[0_0_15px_rgba(255,170,0,0.2)]"
+          >
+            {searching ? <Loader2 className="size-3.5 animate-spin" /> : <Search className="size-3.5" />}
+            {searching ? "TRACING..." : "TRACE"}
           </Button>
         </TabsContent>
 
@@ -278,9 +385,13 @@ export default function SearchPage() {
             <SelectField label="VEHICLE COLOR" value={vehicleColor} onChange={setVehicleColor} options={[...COLOR_OPTIONS]} />
           </div>
           {cameraFilterRow}
-          <Button className="gap-2 rounded-sm border border-[#00ff88]/30 bg-[#00ff88]/10 font-heading text-[10px] uppercase tracking-wider text-[#00ff88] hover:bg-[#00ff88]/20 hover:shadow-[0_0_15px_rgba(0,255,136,0.2)]">
-            <Search className="size-3.5" />
-            SEARCH
+          <Button
+            disabled={searching}
+            onClick={handleAttributeSearch}
+            className="gap-2 rounded-sm border border-[#00ff88]/30 bg-[#00ff88]/10 font-heading text-[10px] uppercase tracking-wider text-[#00ff88] hover:bg-[#00ff88]/20 hover:shadow-[0_0_15px_rgba(0,255,136,0.2)]"
+          >
+            {searching ? <Loader2 className="size-3.5 animate-spin" /> : <Search className="size-3.5" />}
+            {searching ? "SEARCHING..." : "SEARCH"}
           </Button>
         </TabsContent>
       </Tabs>
@@ -288,9 +399,9 @@ export default function SearchPage() {
       {/* ----- Results ----- */}
       <SectionTitle>SEARCH RESULTS</SectionTitle>
 
-      {MOCK_SEARCH_RESULTS.length > 0 ? (
+      {displayResults.length > 0 ? (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          {MOCK_SEARCH_RESULTS.map((result) => (
+          {displayResults.map((result) => (
             <div
               key={result.track_id}
               className={`hud-card cursor-pointer p-4 transition-all hover:border-[#00f0ff]/30 ${
@@ -357,7 +468,7 @@ export default function SearchPage() {
           <SectionTitle>TRACK PATH</SectionTitle>
           <div className="hud-card p-4">
             <CityMap
-              cameras={MOCK_CAMERAS.filter(
+              cameras={cameras.filter(
                 (c) => c.id === selectedResult.camera_id
               )}
               center={[trackPath[0].lat, trackPath[0].lng]}

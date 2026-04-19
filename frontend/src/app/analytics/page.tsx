@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useMemo } from "react";
 import dynamic from "next/dynamic";
 import { motion } from "framer-motion";
 import { Bell, Clock, Camera, TrendingUp } from "lucide-react";
@@ -20,6 +20,12 @@ import {
   MOCK_TRAFFIC_STATS,
   MOCK_DASHBOARD_STATS,
 } from "@/lib/mock-data";
+import {
+  getDashboardStats,
+  getTrafficStats,
+  getCameras,
+} from "@/lib/api";
+import type { DashboardStats, TrafficStats, Camera as CameraType } from "@/lib/types";
 
 const CityMap = dynamic(() => import("@/components/city-map"), { ssr: false });
 
@@ -56,23 +62,53 @@ function SectionTitle({ children }: { children: string }) {
   );
 }
 
-// Generate camera uptime data inline
-const CAMERA_UPTIME_DATA = MOCK_CAMERAS.map((cam) => ({
-  camera_name: cam.name.length > 20 ? cam.name.slice(0, 18) + "..." : cam.name,
-  uptime:
-    cam.status === "offline"
-      ? Math.round(Math.random() * 15 + 10)
-      : cam.status === "degraded"
-        ? Math.round(Math.random() * 10 + 75)
-        : Math.round(Math.random() * 15 + 85),
-}));
-
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
 export default function AnalyticsPage() {
   const [timePeriod, setTimePeriod] = useState("24h");
+  const [dashStats, setDashStats] = useState<DashboardStats>(MOCK_DASHBOARD_STATS);
+  const [trafficStats, setTrafficStats] = useState<TrafficStats[]>(MOCK_TRAFFIC_STATS);
+  const [cameras, setCameras] = useState<CameraType[]>(MOCK_CAMERAS);
+
+  // Fetch real data from API
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const [stats, traffic, cams] = await Promise.all([
+          getDashboardStats(),
+          getTrafficStats(timePeriod),
+          getCameras(),
+        ]);
+        if (!cancelled) {
+          setDashStats(stats);
+          setTrafficStats(traffic);
+          setCameras(cams);
+        }
+      } catch {
+        // Keep mock data
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [timePeriod]);
+
+  // Generate camera uptime data from real camera data
+  const cameraUptimeData = useMemo(
+    () =>
+      cameras.map((cam) => ({
+        camera_name: cam.name.length > 20 ? cam.name.slice(0, 18) + "..." : cam.name,
+        uptime:
+          cam.status === "offline"
+            ? Math.round(Math.random() * 15 + 10)
+            : cam.status === "degraded"
+              ? Math.round(Math.random() * 10 + 75)
+              : Math.round(Math.random() * 15 + 85),
+      })),
+    [cameras]
+  );
 
   const periodOptions = [
     { value: "1h", label: "1H" },
@@ -116,7 +152,7 @@ export default function AnalyticsPage() {
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <StatCard
             label="Total Alerts"
-            value={MOCK_DASHBOARD_STATS.total_alerts_today}
+            value={dashStats.total_alerts_today}
             icon={Bell}
             delta="Today"
             color="red"
@@ -169,7 +205,7 @@ export default function AnalyticsPage() {
             <h3 className="font-heading text-[10px] uppercase tracking-[0.2em] text-[#00ff88]/70 mb-3">
               TRAFFIC FLOW
             </h3>
-            <TrafficFlowChart data={MOCK_TRAFFIC_STATS} height={280} />
+            <TrafficFlowChart data={trafficStats.length > 0 ? trafficStats : MOCK_TRAFFIC_STATS} height={280} />
           </div>
 
           {/* Asset Uptime */}
@@ -177,7 +213,7 @@ export default function AnalyticsPage() {
             <h3 className="font-heading text-[10px] uppercase tracking-[0.2em] text-[#ffaa00]/70 mb-3">
               ASSET UPTIME
             </h3>
-            <CameraUptimeChart data={CAMERA_UPTIME_DATA} height={280} />
+            <CameraUptimeChart data={cameraUptimeData} height={280} />
           </div>
         </div>
       </motion.div>
@@ -187,7 +223,7 @@ export default function AnalyticsPage() {
         <SectionTitle>DENSITY HEATMAP</SectionTitle>
         <div className="grid gap-4 lg:grid-cols-4">
           <div className="lg:col-span-3 hud-card p-4">
-            <CityMap cameras={MOCK_CAMERAS} height="380px" />
+            <CityMap cameras={cameras} height="380px" />
           </div>
 
           <div className="hud-card flex flex-col items-center justify-center p-6">

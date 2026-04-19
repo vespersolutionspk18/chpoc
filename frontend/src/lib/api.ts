@@ -7,6 +7,7 @@ import type {
   AttributeSearchQuery,
   Camera,
   DashboardStats,
+  Detection,
   EventProfile,
   HeatmapPoint,
   PlateSearchQuery,
@@ -155,3 +156,34 @@ export const activateEvent = (id: string) =>
 
 export const deactivateEvent = (id: string) =>
   request<EventProfile>(`/api/events/${id}/deactivate`, { method: "POST" });
+
+// ---------------------------------------------------------------------------
+// Pipeline control
+// ---------------------------------------------------------------------------
+
+export const startPipeline = () =>
+  request<{ status: string; cameras: number }>("/api/pipeline/start", { method: "POST" });
+
+export const stopPipeline = () =>
+  request<{ status: string }>("/api/pipeline/stop", { method: "POST" });
+
+export const getPipelineStatus = () =>
+  request<Record<string, { running: boolean }>>("/api/pipeline/status");
+
+// ---------------------------------------------------------------------------
+// Live frame data
+// ---------------------------------------------------------------------------
+
+export interface FrameData {
+  camera_id: string;
+  frame_index: number;
+  timestamp: string;
+  detection_count: number;
+  detections: Detection[];
+}
+
+export const getFrameData = (cameraId: string) =>
+  request<FrameData>(`/api/frames/${cameraId}`);
+
+export const getAllFrames = () =>
+  request<Record<string, FrameData>>("/api/frames");

@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { Save, Plug } from "lucide-react";
+import { Save, Plug, Play, Square } from "lucide-react";
 
 import { PageHeader } from "@/components/page-header";
 import { StatusDot } from "@/components/status-dot";
@@ -16,6 +16,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  getPipelineStatus,
+  startPipeline,
+  stopPipeline,
+} from "@/lib/api";
 
 // ---------------------------------------------------------------------------
 // Stagger animation variants
@@ -56,6 +61,66 @@ export default function SettingsPage() {
   const [gridLayout, setGridLayout] = useState("2x2");
   const [refreshInterval, setRefreshInterval] = useState("30");
 
+  // Pipeline status
+  const [pipelineStatus, setPipelineStatus] = useState<Record<string, { running: boolean }>>({});
+  const [pipelineLoading, setPipelineLoading] = useState(false);
+
+  // Connectivity check state
+  const [aiServiceStatus, setAiServiceStatus] = useState<"unknown" | "online" | "offline">("unknown");
+  const [dbStatus, setDbStatus] = useState<"unknown" | "online" | "offline">("unknown");
+
+  // Fetch pipeline status and check connectivity
+  useEffect(() => {
+    async function checkStatus() {
+      // Check pipeline status
+      try {
+        const status = await getPipelineStatus();
+        setPipelineStatus(status);
+      } catch {
+        // Pipeline unavailable
+      }
+
+      // Check backend health (if API responds, DB and AI service are likely up)
+      try {
+        const res = await fetch(
+          (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000") + "/api/analytics/dashboard"
+        );
+        if (res.ok) {
+          setDbStatus("online");
+          setAiServiceStatus("online");
+        } else {
+          setDbStatus("offline");
+          setAiServiceStatus("offline");
+        }
+      } catch {
+        setDbStatus("offline");
+        setAiServiceStatus("offline");
+      }
+    }
+    checkStatus();
+  }, []);
+
+  const pipelineRunning = Object.values(pipelineStatus).some((s) => s.running);
+  const pipelineCameraCount = Object.keys(pipelineStatus).length;
+
+  async function handleTogglePipeline() {
+    setPipelineLoading(true);
+    try {
+      if (pipelineRunning) {
+        await stopPipeline();
+        setPipelineStatus({});
+      } else {
+        await startPipeline();
+        const status = await getPipelineStatus();
+        setPipelineStatus(status);
+      }
+    } catch (err) {
+      console.warn("Pipeline toggle failed:", err);
+    } finally {
+      setPipelineLoading(false);
+    }
+  }
+
   function handleSave(section: string) {
     console.log(`[Settings] Saved section: ${section}`);
   }
@@ -84,37 +149,43 @@ export default function SettingsPage() {
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4 mb-4">
             {/* AI Service */}
             <div className="flex items-center gap-3 rounded-sm border border-[#00f0ff]/10 glass-deep px-3 py-2.5">
-              <StatusDot status="online" />
+              <StatusDot status={aiServiceStatus === "online" ? "online" : "offline"} />
               <div className="min-w-0">
                 <p className="font-heading text-[9px] uppercase tracking-wider text-slate-300">AI Service</p>
                 <p className="font-data text-[11px] text-[#4a6a8a] truncate">
                   http://vast-ai:8001
                 </p>
-                <p className="font-data text-[10px] text-[#00ff88]">Connected</p>
+                <p className={`font-data text-[10px] ${aiServiceStatus === "online" ? "text-[#00ff88]" : aiServiceStatus === "offline" ? "text-[#ff2d78]" : "text-[#4a6a8a]"}`}>
+                  {aiServiceStatus === "online" ? "Connected" : aiServiceStatus === "offline" ? "Disconnected" : "Checking..."}
+                </p>
               </div>
             </div>
 
             {/* Database */}
             <div className="flex items-center gap-3 rounded-sm border border-[#00f0ff]/10 glass-deep px-3 py-2.5">
-              <StatusDot status="online" />
+              <StatusDot status={dbStatus === "online" ? "online" : "offline"} />
               <div className="min-w-0">
                 <p className="font-heading text-[9px] uppercase tracking-wider text-slate-300">Database</p>
                 <p className="font-data text-[11px] text-[#4a6a8a]">
                   PostgreSQL
                 </p>
-                <p className="font-data text-[10px] text-[#00ff88]">Connected</p>
+                <p className={`font-data text-[10px] ${dbStatus === "online" ? "text-[#00ff88]" : dbStatus === "offline" ? "text-[#ff2d78]" : "text-[#4a6a8a]"}`}>
+                  {dbStatus === "online" ? "Connected" : dbStatus === "offline" ? "Disconnected" : "Checking..."}
+                </p>
               </div>
             </div>
 
-            {/* Redis */}
+            {/* Pipeline Status */}
             <div className="flex items-center gap-3 rounded-sm border border-[#00f0ff]/10 glass-deep px-3 py-2.5">
-              <StatusDot status="online" />
+              <StatusDot status={pipelineRunning ? "online" : "offline"} />
               <div className="min-w-0">
-                <p className="font-heading text-[9px] uppercase tracking-wider text-slate-300">Redis</p>
+                <p className="font-heading text-[9px] uppercase tracking-wider text-slate-300">Pipeline</p>
                 <p className="font-data text-[11px] text-[#4a6a8a]">
-                  Cache Layer
+                  {pipelineCameraCount} cameras
                 </p>
-                <p className="font-data text-[10px] text-[#00ff88]">Connected</p>
+                <p className={`font-data text-[10px] ${pipelineRunning ? "text-[#00ff88]" : "text-[#ff2d78]"}`}>
+                  {pipelineRunning ? "Running" : "Stopped"}
+                </p>
               </div>
             </div>
 
@@ -127,12 +198,26 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          <div className="flex justify-end">
+          <div className="flex justify-end gap-2">
+            <Button
+              size="sm"
+              disabled={pipelineLoading}
+              onClick={handleTogglePipeline}
+              className={`gap-1.5 rounded-sm border font-heading text-[10px] uppercase tracking-wider ${
+                pipelineRunning
+                  ? "border-[#ff2d78]/20 text-[#ff2d78] hover:bg-[#ff2d78]/10"
+                  : "border-[#00ff88]/20 text-[#00ff88] hover:bg-[#00ff88]/10"
+              }`}
+              variant="outline"
+            >
+              {pipelineRunning ? <Square className="size-3.5" /> : <Play className="size-3.5" />}
+              {pipelineLoading ? "..." : pipelineRunning ? "STOP PIPELINE" : "START PIPELINE"}
+            </Button>
             <Button
               variant="outline"
               size="sm"
               className="gap-1.5 rounded-sm border-[#00f0ff]/20 font-heading text-[10px] uppercase tracking-wider text-[#00f0ff] hover:bg-[#00f0ff]/10"
-              onClick={() => console.log("[Settings] Testing connections...")}
+              onClick={() => window.location.reload()}
             >
               <Plug className="size-3.5" />
               TEST CONNECTION

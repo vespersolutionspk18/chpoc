@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
 import dynamic from "next/dynamic";
 import {
@@ -9,18 +10,37 @@ import {
   AlertTriangle,
   Users,
   Car,
+  Play,
+  Square,
 } from "lucide-react";
 
 import { StatCard } from "@/components/stat-card";
 import { AlertFeed } from "@/components/alert-feed";
 import { CameraFeedCard } from "@/components/camera-feed-card";
 import { ActivityChart } from "@/components/activity-chart";
+import { PageSkeleton } from "@/components/page-skeleton";
+import { Button } from "@/components/ui/button";
+import { useAlertWebSocket } from "@/hooks/use-alert-websocket";
+import { useAlertStore } from "@/lib/stores/use-alert-store";
 import {
   MOCK_CAMERAS,
   MOCK_ALERTS,
   MOCK_DASHBOARD_STATS,
   MOCK_ACTIVITY_DATA,
 } from "@/lib/mock-data";
+import {
+  getDashboardStats,
+  getCameras,
+  getAlerts,
+  startPipeline,
+  stopPipeline,
+  getPipelineStatus,
+} from "@/lib/api";
+import type {
+  Alert as AlertType,
+  Camera as CameraType,
+  DashboardStats,
+} from "@/lib/types";
 
 const CityMap = dynamic(() => import("@/components/city-map"), { ssr: false });
 
@@ -62,7 +82,107 @@ function SectionTitle({ children }: { children: string }) {
 // ---------------------------------------------------------------------------
 
 export default function DashboardPage() {
-  const stats = MOCK_DASHBOARD_STATS;
+  const [stats, setStats] = useState<DashboardStats>(MOCK_DASHBOARD_STATS);
+  const [cameras, setCameras] = useState<CameraType[]>(MOCK_CAMERAS);
+  const [alerts, setAlerts] = useState<AlertType[]>(MOCK_ALERTS);
+  const [loading, setLoading] = useState(true);
+  const [pipelineRunning, setPipelineRunning] = useState(false);
+  const [pipelineLoading, setPipelineLoading] = useState(false);
+
+  // Connect WebSocket for live alerts
+  const { isConnected: wsConnected } = useAlertWebSocket();
+  const wsAlerts = useAlertStore((s) => s.alerts);
+
+  // Merge WS alerts with fetched alerts: WS alerts take priority (newest first)
+  const displayAlerts = wsAlerts.length > 0 ? wsAlerts : alerts;
+
+  // Initial data fetch
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchData() {
+      try {
+        const [statsData, camerasData, alertsData] = await Promise.all([
+          getDashboardStats(),
+          getCameras(),
+          getAlerts(),
+        ]);
+
+        if (!cancelled) {
+          setStats(statsData);
+          setCameras(camerasData);
+          setAlerts(alertsData);
+          // Seed the alert store with fetched alerts if no WS alerts exist yet
+          useAlertStore.getState().setAlerts(alertsData);
+        }
+      } catch (err) {
+        // API unavailable -- keep mock data as fallback
+        console.warn("API fetch failed, using mock data:", err);
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
+    fetchData();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Check pipeline status on mount
+  useEffect(() => {
+    async function checkPipeline() {
+      try {
+        const status = await getPipelineStatus();
+        const anyRunning = Object.values(status).some((s) => s.running);
+        setPipelineRunning(anyRunning);
+      } catch {
+        // Pipeline status unavailable
+      }
+    }
+    checkPipeline();
+  }, []);
+
+  // Auto-refresh dashboard stats every 10 seconds
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try {
+        const [statsData, alertsData] = await Promise.all([
+          getDashboardStats(),
+          getAlerts({ limit: 50 }),
+        ]);
+        setStats(statsData);
+        setAlerts(alertsData);
+      } catch {
+        // Keep current data on failure
+      }
+    }, 10_000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleTogglePipeline = useCallback(async () => {
+    setPipelineLoading(true);
+    try {
+      if (pipelineRunning) {
+        await stopPipeline();
+        setPipelineRunning(false);
+      } else {
+        await startPipeline();
+        setPipelineRunning(true);
+      }
+    } catch (err) {
+      console.warn("Pipeline toggle failed:", err);
+    } finally {
+      setPipelineLoading(false);
+    }
+  }, [pipelineRunning]);
+
+  if (loading) {
+    return <PageSkeleton />;
+  }
 
   return (
     <motion.div
@@ -71,7 +191,7 @@ export default function DashboardPage() {
       initial="hidden"
       animate="show"
     >
-      {/* ── OPERATIONAL OVERVIEW ── */}
+      {/* ---- OPERATIONAL OVERVIEW ---- */}
       <motion.div variants={fadeUp}>
         <SectionTitle>OPERATIONAL OVERVIEW</SectionTitle>
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
@@ -117,14 +237,52 @@ export default function DashboardPage() {
         </div>
       </motion.div>
 
-      {/* ── THREAT FEED + SURVEILLANCE GRID ── */}
+      {/* ---- Pipeline Control ---- */}
+      <motion.div variants={fadeUp}>
+        <div className="flex items-center gap-4">
+          <Button
+            size="sm"
+            disabled={pipelineLoading}
+            onClick={handleTogglePipeline}
+            className={`gap-1.5 rounded-sm border font-heading text-[10px] uppercase tracking-wider ${
+              pipelineRunning
+                ? "border-[#ff2d78]/30 bg-[#ff2d78]/10 text-[#ff2d78] hover:bg-[#ff2d78]/20"
+                : "border-[#00ff88]/30 bg-[#00ff88]/10 text-[#00ff88] hover:bg-[#00ff88]/20"
+            }`}
+          >
+            {pipelineRunning ? (
+              <Square className="size-3.5" />
+            ) : (
+              <Play className="size-3.5" />
+            )}
+            {pipelineLoading
+              ? "PROCESSING..."
+              : pipelineRunning
+                ? "STOP PIPELINE"
+                : "START PIPELINE"}
+          </Button>
+          <span className="font-data text-[10px] text-[#4a6a8a]">
+            WS: {wsConnected ? "CONNECTED" : "DISCONNECTED"}
+          </span>
+          {pipelineRunning && (
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block size-2 animate-pulse rounded-full bg-[#00ff88] shadow-[0_0_6px_#00ff88]" />
+              <span className="font-heading text-[10px] uppercase tracking-wider text-[#00ff88]">
+                PIPELINE ACTIVE
+              </span>
+            </span>
+          )}
+        </div>
+      </motion.div>
+
+      {/* ---- THREAT FEED + SURVEILLANCE GRID ---- */}
       <motion.div variants={fadeUp}>
         <div className="grid gap-4 lg:grid-cols-3">
           {/* Left column -- Threat Feed */}
           <div className="lg:col-span-1">
             <SectionTitle>THREAT FEED</SectionTitle>
             <AlertFeed
-              alerts={MOCK_ALERTS}
+              alerts={displayAlerts}
               maxItems={10}
               onAlertClick={(alert) =>
                 console.log("Alert clicked:", alert.id)
@@ -136,7 +294,7 @@ export default function DashboardPage() {
           <div className="lg:col-span-2">
             <SectionTitle>SURVEILLANCE GRID</SectionTitle>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              {MOCK_CAMERAS.slice(0, 6).map((camera) => (
+              {cameras.slice(0, 6).map((camera) => (
                 <CameraFeedCard
                   key={camera.id}
                   camera={camera}
@@ -151,7 +309,7 @@ export default function DashboardPage() {
         </div>
       </motion.div>
 
-      {/* ── ACTIVITY ANALYSIS + TACTICAL MAP ── */}
+      {/* ---- ACTIVITY ANALYSIS + TACTICAL MAP ---- */}
       <motion.div
         className="grid gap-4 lg:grid-cols-2"
         variants={fadeUp}
@@ -166,7 +324,7 @@ export default function DashboardPage() {
         <div>
           <SectionTitle>TACTICAL MAP</SectionTitle>
           <div className="hud-card p-4">
-            <CityMap cameras={MOCK_CAMERAS} height="350px" />
+            <CityMap cameras={cameras} height="350px" />
           </div>
         </div>
       </motion.div>

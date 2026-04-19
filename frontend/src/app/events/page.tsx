@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { motion } from "framer-motion";
 import {
   Plus,
@@ -33,11 +33,19 @@ import {
 import { Separator } from "@/components/ui/separator";
 
 import { MOCK_EVENTS, MOCK_CAMERAS } from "@/lib/mock-data";
+import {
+  getEvents,
+  getCameras,
+  createEvent,
+  activateEvent,
+  deactivateEvent,
+} from "@/lib/api";
 import type {
   EventProfile,
   EventType,
   EventStatus,
   AlertType,
+  Camera as CameraType,
 } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
@@ -144,6 +152,7 @@ export default function EventsPage() {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [events, setEvents] = useState<EventProfile[]>(MOCK_EVENTS);
+  const [cameras, setCameras] = useState<CameraType[]>(MOCK_CAMERAS);
 
   // Create form state
   const [formName, setFormName] = useState("");
@@ -156,6 +165,27 @@ export default function EventsPage() {
   );
   const [formCrowdThreshold, setFormCrowdThreshold] = useState(50);
   const [formLoiteringDuration, setFormLoiteringDuration] = useState(300);
+
+  // Fetch real data
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const [eventsData, camerasData] = await Promise.all([
+          getEvents(),
+          getCameras(),
+        ]);
+        if (!cancelled) {
+          setEvents(eventsData);
+          setCameras(camerasData);
+        }
+      } catch {
+        // Keep mock data
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, []);
 
   const filteredEvents = useMemo(() => {
     if (statusFilter === "all") return events;
@@ -189,25 +219,40 @@ export default function EventsPage() {
     );
   }
 
-  function handleActivate(eventId: string) {
-    setEvents((prev) =>
-      prev.map((e) =>
-        e.id === eventId ? { ...e, status: "ACTIVE" as EventStatus } : e
-      )
-    );
+  async function handleActivate(eventId: string) {
+    try {
+      const updated = await activateEvent(eventId);
+      setEvents((prev) =>
+        prev.map((e) => (e.id === eventId ? updated : e))
+      );
+    } catch {
+      // Optimistic fallback
+      setEvents((prev) =>
+        prev.map((e) =>
+          e.id === eventId ? { ...e, status: "ACTIVE" as EventStatus } : e
+        )
+      );
+    }
   }
 
-  function handleDeactivate(eventId: string) {
-    setEvents((prev) =>
-      prev.map((e) =>
-        e.id === eventId ? { ...e, status: "COMPLETED" as EventStatus } : e
-      )
-    );
+  async function handleDeactivate(eventId: string) {
+    try {
+      const updated = await deactivateEvent(eventId);
+      setEvents((prev) =>
+        prev.map((e) => (e.id === eventId ? updated : e))
+      );
+    } catch {
+      // Optimistic fallback
+      setEvents((prev) =>
+        prev.map((e) =>
+          e.id === eventId ? { ...e, status: "COMPLETED" as EventStatus } : e
+        )
+      );
+    }
   }
 
-  function handleCreateEvent() {
-    const newEvent: EventProfile = {
-      id: `evt-${Date.now()}`,
+  async function handleCreateEvent() {
+    const newEventData: Partial<EventProfile> = {
       name: formName || "Untitled Event",
       event_type: formType,
       start_time: formStartTime
@@ -223,11 +268,29 @@ export default function EventsPage() {
       },
       suppressed_alert_types:
         formSuppressedTypes.length > 0 ? formSuppressedTypes : null,
-      status: "SCHEDULED",
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
     };
-    setEvents((prev) => [newEvent, ...prev]);
+
+    try {
+      const created = await createEvent(newEventData);
+      setEvents((prev) => [created, ...prev]);
+    } catch {
+      // Fallback: create local event
+      const localEvent: EventProfile = {
+        id: `evt-${Date.now()}`,
+        name: newEventData.name!,
+        event_type: newEventData.event_type!,
+        start_time: newEventData.start_time!,
+        end_time: newEventData.end_time!,
+        affected_camera_ids: newEventData.affected_camera_ids ?? null,
+        threshold_overrides: newEventData.threshold_overrides ?? null,
+        suppressed_alert_types: newEventData.suppressed_alert_types ?? null,
+        status: "SCHEDULED",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      setEvents((prev) => [localEvent, ...prev]);
+    }
+
     setDialogOpen(false);
     // Reset form
     setFormName("");
@@ -345,7 +408,7 @@ export default function EventsPage() {
                   Affected Cameras
                 </label>
                 <div className="grid grid-cols-1 gap-1.5 max-h-36 overflow-y-auto rounded-sm border border-[#00f0ff]/10 glass-deep p-2">
-                  {MOCK_CAMERAS.map((cam) => (
+                  {cameras.map((cam) => (
                     <label
                       key={cam.id}
                       className="flex items-center gap-2 font-data text-xs cursor-pointer hover:bg-[#00f0ff]/5 rounded-sm px-1 py-0.5"
