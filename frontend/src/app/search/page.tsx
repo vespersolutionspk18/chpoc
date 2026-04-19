@@ -33,7 +33,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-import { MOCK_CAMERAS, MOCK_SEARCH_RESULTS } from "@/lib/mock-data";
 import {
   getCameras,
   searchByFace,
@@ -115,8 +114,8 @@ export default function SearchPage() {
   const [selectedResult, setSelectedResult] = useState<SearchResult | null>(
     null
   );
-  const [results, setResults] = useState<SearchResult[]>(MOCK_SEARCH_RESULTS);
-  const [cameras, setCameras] = useState<Camera[]>(MOCK_CAMERAS);
+  const [results, setResults] = useState<SearchResult[]>([]);
+  const [cameras, setCameras] = useState<Camera[]>([]);
   const [searching, setSearching] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
 
@@ -300,7 +299,7 @@ export default function SearchPage() {
     </div>
   );
 
-  const displayResults = hasSearched ? results : MOCK_SEARCH_RESULTS;
+  const displayResults = results;
 
   return (
     <motion.div

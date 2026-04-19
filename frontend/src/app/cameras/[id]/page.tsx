@@ -1,6 +1,6 @@
 "use client";
 
-import { use } from "react";
+import { use, useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import Link from "next/link";
 import {
@@ -22,8 +22,8 @@ import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { MOCK_CAMERAS, MOCK_ALERTS } from "@/lib/mock-data";
-import type { Detection } from "@/lib/types";
+import { getCamera, getAlerts } from "@/lib/api";
+import type { Camera, Alert, Detection } from "@/lib/types";
 
 // ---------------------------------------------------------------------------
 // Mock detections for the camera view
@@ -83,8 +83,31 @@ export default function CameraDetailPage({
 }) {
   const { id } = use(params);
 
-  const camera = MOCK_CAMERAS.find((c) => c.id === id) ?? null;
-  const cameraAlerts = MOCK_ALERTS.filter((a) => a.camera_id === id);
+  const [camera, setCamera] = useState<Camera | null>(null);
+  const [cameraAlerts, setCameraAlerts] = useState<Alert[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const [cam, alerts] = await Promise.all([
+          getCamera(id),
+          getAlerts({ camera_id: id, limit: 20 }),
+        ]);
+        if (!cancelled) {
+          setCamera(cam);
+          setCameraAlerts(alerts);
+        }
+      } catch (err) {
+        console.error("Failed to load camera:", err);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [id]);
 
   if (!camera) {
     return (
