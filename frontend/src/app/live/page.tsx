@@ -202,8 +202,8 @@ export default function LiveViewPage() {
           </div>
         </PageHeader>
 
-        {/* Camera grid */}
-        <div className={`grid gap-1.5 ${config.cols}`}>
+        {/* Camera grid — hidden when fullscreen is open (frees video connections) */}
+        <div className={`grid gap-1.5 ${config.cols} ${fullscreenCamera ? "hidden" : ""}`}>
           {visibleCameras.map((camera) => {
             const detections = getCameraDetections(camera.id);
             const active = isCameraActive(camera.id);
