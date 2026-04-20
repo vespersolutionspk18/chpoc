@@ -381,15 +381,10 @@ def _run_clip_person_fallback(pil_img: Image.Image) -> dict:
 
 
 def _run_deepface(rgb_np: np.ndarray) -> dict | None:
-    """Run DeepFace analysis for age, GENDER, emotion, ethnicity."""
+    """Run DeepFace analysis for age, gender, emotion, ethnicity — ON GPU."""
     if not _check_deepface():
         return None
     try:
-        import tensorflow as tf
-        try:
-            tf.config.set_visible_devices([], "GPU")
-        except RuntimeError:
-            pass
         from deepface import DeepFace
         bgr = cv2.cvtColor(rgb_np, cv2.COLOR_RGB2BGR)
         results = DeepFace.analyze(
