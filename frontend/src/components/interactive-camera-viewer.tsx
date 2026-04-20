@@ -40,9 +40,10 @@ interface AnalysisResult {
 interface Props {
   camera: Camera;
   onClose: () => void;
+  videoUrlOverride?: string;
 }
 
-export function InteractiveCameraViewer({ camera, onClose }: Props) {
+export function InteractiveCameraViewer({ camera, onClose, videoUrlOverride }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [paused, setPaused] = useState(false);
@@ -57,8 +58,10 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
   const [duration, setDuration] = useState(0);
   const [searchResults, setSearchResults] = useState<Record<string, unknown>[] | null>(null);
   const [searching, setSearching] = useState(false);
+  const [expandedThumb, setExpandedThumb] = useState<string | null>(null);
+  const cropBlobRef = useRef<Blob | null>(null);
 
-  const videoUrl = `${API_URL}/api/video/file/${camera.id}`;
+  const videoUrl = videoUrlOverride ?? `${API_URL}/api/video/file/${camera.id}`;
 
   // Capture current frame as blob — downscale to 640px wide for faster upload
   const captureFrame = useCallback((): Promise<Blob | null> => {
@@ -271,6 +274,7 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
 
     crop.toBlob(async (blob) => {
       if (!blob) { setAnalyzing(false); return; }
+      cropBlobRef.current = blob; // save for vehicle reverse search
       const form = new FormData();
       form.append("image", blob, "crop.jpg");
 
@@ -570,43 +574,6 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
                     </div>
                   )}
 
-                  {/* Search results */}
-                  {searchResults && (
-                    <div className="space-y-2">
-                      <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#ff2d78]">
-                        MATCHES FOUND: {searchResults.length}
-                      </h4>
-                      {searchResults.length === 0 && (
-                        <p className="font-data text-[10px] text-[#4a6a8a]">No matches in indexed videos</p>
-                      )}
-                      <div className="space-y-1.5 max-h-60 overflow-y-auto">
-                        {searchResults.map((match, i) => (
-                          <div key={i} className="flex items-center gap-2 rounded-sm border border-[#ff2d78]/15 bg-[#ff2d78]/5 p-2">
-                            {(match as Record<string, string>).thumbnail_b64 && (
-                              <img
-                                src={`data:image/jpeg;base64,${(match as Record<string, string>).thumbnail_b64}`}
-                                alt="match"
-                                className="size-10 rounded-sm object-cover border border-[#ff2d78]/20"
-                              />
-                            )}
-                            <div className="flex-1 min-w-0">
-                              <p className="font-data text-[10px] text-[#ff2d78] truncate">
-                                {(match as Record<string, string>).video_file ?? "unknown"}
-                              </p>
-                              <p className="font-data text-[9px] text-[#4a6a8a]">
-                                {(match as Record<string, number>).timestamp_sec != null
-                                  ? `${Math.floor((match as Record<string, number>).timestamp_sec / 60)}:${(Math.floor((match as Record<string, number>).timestamp_sec) % 60).toString().padStart(2, "0")}`
-                                  : ""}
-                                {" — "}
-                                Similarity: {((match as Record<string, number>).similarity * 100).toFixed(0)}%
-                              </p>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
                   {isPerson && !analysis.face && (
                     <p className="py-2 text-center font-data text-xs text-[#4a6a8a]">
                       No face detected
@@ -626,6 +593,85 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
                       )}
                       <div className="rounded-sm border border-[#00ff88]/20 bg-[#00ff88]/5 p-3 text-center">
                         <span className="font-data text-2xl tracking-wider text-[#00ff88]">{analysis.plate.plate_text}</span>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* VEHICLE REVERSE SEARCH */}
+                  {!isPerson && cropBlobRef.current && (
+                    <button
+                      onClick={async () => {
+                        setSearching(true);
+                        setSearchResults(null);
+                        try {
+                          const form = new FormData();
+                          form.append("image", cropBlobRef.current!, "vehicle.jpg");
+                          const resp = await fetch(`${API_URL}/api/video/search-vehicle-by-image`, {
+                            method: "POST",
+                            body: form,
+                          });
+                          if (resp.ok) {
+                            const data = await resp.json();
+                            setSearchResults(data.matches ?? []);
+                          }
+                        } catch (err) {
+                          console.error("Vehicle search failed:", err);
+                        } finally {
+                          setSearching(false);
+                        }
+                      }}
+                      disabled={searching}
+                      className="w-full rounded-sm border border-[#00ff88]/30 bg-[#00ff88]/10 py-2 font-heading text-[10px] uppercase tracking-wider text-[#00ff88] hover:bg-[#00ff88]/20 disabled:opacity-50"
+                    >
+                      {searching ? "SEARCHING ALL CAMERAS..." : "🔍 SEARCH THIS VEHICLE ACROSS ALL CAMERAS"}
+                    </button>
+                  )}
+
+                  {/* SEARCH RESULTS — shared for face + vehicle */}
+                  {searchResults && (
+                    <div className="space-y-2">
+                      <h4 className="font-heading text-[10px] uppercase tracking-widest" style={{ color: isPerson ? "#ff2d78" : "#00ff88" }}>
+                        MATCHES FOUND: {searchResults.length}
+                      </h4>
+                      {searchResults.length === 0 && (
+                        <p className="font-data text-[10px] text-[#4a6a8a]">No matches in indexed videos. Run index build first.</p>
+                      )}
+                      <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                        {searchResults.map((match, i) => (
+                          <div
+                            key={i}
+                            className="flex items-center gap-2 rounded-sm border border-white/10 bg-white/[0.03] p-2 cursor-pointer hover:bg-white/[0.06] transition-colors"
+                            onClick={() => {
+                              const tb = (match as Record<string, string>).thumbnail_b64;
+                              if (tb) setExpandedThumb(tb);
+                            }}
+                          >
+                            {(match as Record<string, string>).thumbnail_b64 && (
+                              <img
+                                src={`data:image/jpeg;base64,${(match as Record<string, string>).thumbnail_b64}`}
+                                alt="match"
+                                className="size-12 rounded-sm object-cover border border-white/10"
+                              />
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <p className="font-data text-[10px] text-slate-300 truncate">
+                                {(match as Record<string, string>).video_file ?? "unknown"}
+                              </p>
+                              <p className="font-data text-[9px] text-[#4a6a8a]">
+                                {(match as Record<string, number>).timestamp_sec != null
+                                  ? `${Math.floor((match as Record<string, number>).timestamp_sec / 60)}:${(Math.floor((match as Record<string, number>).timestamp_sec) % 60).toString().padStart(2, "0")}`
+                                  : ""}
+                                {" — "}
+                                {((match as Record<string, number>).similarity * 100).toFixed(0)}% match
+                              </p>
+                              {(match as Record<string, string>).dominant_color && (
+                                <span className="font-data text-[8px] text-[#4a6a8a]">
+                                  {(match as Record<string, string>).dominant_color} {(match as Record<string, string>).vehicle_class}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </div>
                   )}
@@ -679,6 +725,21 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Expanded thumbnail modal */}
+      {expandedThumb && (
+        <div
+          className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/80 cursor-pointer"
+          onClick={() => setExpandedThumb(null)}
+        >
+          <img
+            src={`data:image/jpeg;base64,${expandedThumb}`}
+            alt="Expanded match"
+            className="max-w-[80vw] max-h-[80vh] rounded-sm border border-[#00f0ff]/30 object-contain"
+          />
+          <span className="absolute top-4 right-4 font-heading text-xs text-[#4a6a8a]">CLICK TO CLOSE</span>
+        </div>
+      )}
     </motion.div>
   );
 }

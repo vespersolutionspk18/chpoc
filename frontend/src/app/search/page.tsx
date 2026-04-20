@@ -166,12 +166,7 @@ export default function SearchPage() {
     setSearching(true);
     setHasSearched(true);
     try {
-      const res = await searchByFace(
-        faceFile,
-        getSelectedCameraIds(),
-        `${startDate}T00:00:00Z`,
-        `${endDate}T23:59:59Z`
-      );
+      const res = await searchByFace(faceFile);
       setResults(res);
     } catch {
       // Keep current results

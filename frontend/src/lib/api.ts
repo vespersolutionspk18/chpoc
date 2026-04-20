@@ -99,18 +99,28 @@ export const escalateAlert = (id: string) =>
 // Search
 // ---------------------------------------------------------------------------
 
-export const searchByFace = (
-  file: File,
-  cameraIds?: string[],
-  startTime?: string,
-  endTime?: string,
-) => {
+export const searchByFace = async (file: File): Promise<SearchResult[]> => {
   const form = new FormData();
-  form.append("file", file);
-  if (cameraIds) form.append("camera_ids", JSON.stringify(cameraIds));
-  if (startTime) form.append("start_time", startTime);
-  if (endTime) form.append("end_time", endTime);
-  return postForm<SearchResult[]>("/api/search/face", form);
+  form.append("image", file);
+  form.append("top_k", "30");
+  try {
+    const resp = await fetch(`${BASE_URL}/api/video/search-face-by-image`, {
+      method: "POST",
+      body: form,
+    });
+    if (!resp.ok) return [];
+    const data = await resp.json();
+    return (data.matches ?? []).map((m: Record<string, unknown>, i: number) => ({
+      track_id: `match-${i}`,
+      camera_id: (m.camera_id as string) ?? "",
+      camera_name: ((m.video_file as string) ?? "").replace("clip_", "").replace(".mp4", "").replace(/_/g, " "),
+      timestamp: new Date(((m.timestamp_sec as number) ?? 0) * 1000).toISOString(),
+      object_type: "person",
+      confidence: (m.similarity as number) ?? 0,
+      thumbnail_url: m.thumbnail_b64 ? `data:image/jpeg;base64,${m.thumbnail_b64}` : undefined,
+      attributes: { video_file: m.video_file, frame: m.frame_num },
+    }));
+  } catch { return []; }
 };
 
 export const searchByPlate = (query: PlateSearchQuery) =>

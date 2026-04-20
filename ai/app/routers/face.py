@@ -273,9 +273,194 @@ async def build_face_index(frame_skip: int = Form(5)):
 
 @router.get("/index/status")
 async def index_status():
-    """Check face index status."""
+    """Check face + vehicle index status."""
     from ai.app.services.face_index import face_index
+    from ai.app.services.vehicle_index import vehicle_index
     return {
-        "index_size": face_index.size,
-        "has_index": face_index.embeddings is not None,
+        "face_index_size": face_index.size,
+        "vehicle_index_size": vehicle_index.size,
+        "has_face_index": face_index.embeddings is not None,
+        "has_vehicle_index": vehicle_index.embeddings is not None,
     }
+
+
+# ---------------------------------------------------------------------------
+# Vehicle reverse search — CLIP embeddings
+# ---------------------------------------------------------------------------
+
+_clip_model = None
+_clip_preprocess = None
+
+def _get_clip():
+    global _clip_model, _clip_preprocess
+    if _clip_model is None:
+        import clip as clip_module
+        import torch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        _clip_model, _clip_preprocess = clip_module.load("ViT-B/32", device=device)
+        logger.info("CLIP ViT-B/32 loaded for vehicle indexing")
+    return _clip_model, _clip_preprocess
+
+
+def _clip_embed_image(img_bgr: np.ndarray) -> list[float]:
+    """Extract CLIP embedding from a BGR image."""
+    import torch
+    from PIL import Image as PILImage
+    model, preprocess = _get_clip()
+    device = next(model.parameters()).device
+    pil = PILImage.fromarray(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB))
+    inp = preprocess(pil).unsqueeze(0).to(device)
+    with torch.no_grad():
+        feat = model.encode_image(inp)
+        feat = feat / feat.norm(dim=-1, keepdim=True)
+    return feat[0].cpu().tolist()
+
+
+def _dominant_color(img_bgr: np.ndarray) -> str:
+    """Get dominant color name from an image using simple HSV analysis."""
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    h, s, v = hsv[:,:,0].mean(), hsv[:,:,1].mean(), hsv[:,:,2].mean()
+    if s < 40:
+        if v < 80: return "black"
+        if v > 180: return "white"
+        return "grey"
+    if h < 10 or h > 170: return "red"
+    if h < 25: return "orange"
+    if h < 35: return "yellow"
+    if h < 80: return "green"
+    if h < 130: return "blue"
+    if h < 160: return "purple"
+    return "red"
+
+
+# COCO classes for vehicles
+_VEHICLE_COCO = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
+
+
+@router.post("/vehicle-index/build")
+async def build_vehicle_index(frame_skip: int = Form(10)):
+    """Process ALL videos, extract CLIP embeddings for every vehicle detection."""
+    from ai.app.services.vehicle_index import vehicle_index
+
+    # Load YOLO for detection
+    from ultralytics import YOLO
+    yolo = YOLO("yolov8x.pt")
+
+    t0 = time.perf_counter()
+    total_vehicles = 0
+    total_frames = 0
+
+    for camera_id, filename in VIDEO_MAP.items():
+        video_path = Path(VIDEO_DIR) / filename
+        if not video_path.exists():
+            continue
+
+        cap = cv2.VideoCapture(str(video_path))
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25
+        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        frame_num = 0
+
+        logger.info("Vehicle indexing %s (%d frames)...", filename, frame_count)
+
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            if frame_num % frame_skip != 0:
+                frame_num += 1
+                continue
+
+            total_frames += 1
+            results = yolo(frame, conf=0.3, verbose=False)
+
+            for r in results:
+                if r.boxes is None:
+                    continue
+                for i in range(len(r.boxes)):
+                    cls_id = int(r.boxes.cls[i].item())
+                    if cls_id not in _VEHICLE_COCO:
+                        continue
+
+                    x1, y1, x2, y2 = [int(v) for v in r.boxes.xyxy[i].tolist()]
+                    x1, y1 = max(0, x1), max(0, y1)
+                    x2, y2 = min(frame.shape[1], x2), min(frame.shape[0], y2)
+                    if x2 <= x1 or y2 <= y1:
+                        continue
+
+                    crop = frame[y1:y2, x1:x2]
+                    if crop.size == 0:
+                        continue
+
+                    # CLIP embedding
+                    emb = _clip_embed_image(crop)
+
+                    # Thumbnail
+                    thumb = cv2.resize(crop, (80, 60))
+                    _, buf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    thumb_b64 = base64.b64encode(buf.tobytes()).decode("ascii")
+
+                    # Dominant color
+                    color = _dominant_color(crop)
+
+                    vehicle_index.add(
+                        embedding=emb,
+                        meta={
+                            "camera_id": camera_id,
+                            "video_file": filename,
+                            "frame_num": frame_num,
+                            "timestamp_sec": round(frame_num / fps, 2),
+                            "vehicle_class": _VEHICLE_COCO[cls_id],
+                            "dominant_color": color,
+                            "bbox": {"x": x1, "y": y1, "w": x2-x1, "h": y2-y1},
+                            "thumbnail_b64": thumb_b64,
+                        },
+                    )
+                    total_vehicles += 1
+
+            frame_num += 1
+
+        cap.release()
+        logger.info("  %s: done", filename)
+
+    vehicle_index.save()
+    elapsed = time.perf_counter() - t0
+    return {
+        "status": "ok",
+        "total_vehicles_indexed": total_vehicles,
+        "total_frames_processed": total_frames,
+        "elapsed_seconds": round(elapsed, 1),
+        "index_size": vehicle_index.size,
+    }
+
+
+class VehicleSearchRequest(BaseModel):
+    embedding: list[float]
+    top_k: int = 20
+    filter_type: str | None = None
+    filter_color: str | None = None
+
+
+@router.post("/vehicle-search")
+async def search_vehicle(req: VehicleSearchRequest):
+    """Search for visually similar vehicles across all indexed video frames."""
+    from ai.app.services.vehicle_index import vehicle_index
+    if vehicle_index.size == 0:
+        return {"matches": [], "index_size": 0, "message": "Run /face/vehicle-index/build first"}
+    results = vehicle_index.search(req.embedding, top_k=req.top_k,
+                                    filter_type=req.filter_type, filter_color=req.filter_color)
+    return {"matches": results, "index_size": vehicle_index.size}
+
+
+@router.post("/vehicle-search/by-image")
+async def search_vehicle_by_image(image: UploadFile = File(...), top_k: int = Form(20)):
+    """Upload a vehicle image to search across all indexed videos."""
+    from ai.app.services.vehicle_index import vehicle_index
+    contents = await image.read()
+    arr = np.frombuffer(contents, dtype=np.uint8)
+    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if frame is None:
+        return {"matches": [], "error": "Could not decode image"}
+
+    emb = _clip_embed_image(frame)
+    results = vehicle_index.search(emb, top_k=top_k)
+    return {"matches": results, "index_size": vehicle_index.size}
