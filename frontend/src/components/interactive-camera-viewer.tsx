@@ -55,6 +55,8 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [searchResults, setSearchResults] = useState<Record<string, unknown>[] | null>(null);
+  const [searching, setSearching] = useState(false);
 
   const videoUrl = `${API_URL}/api/video/file/${camera.id}`;
 
@@ -536,6 +538,71 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
                       <div className="grid grid-cols-2 gap-2">
                         <Cell label="QUALITY" value={`${(analysis.face.quality_score * 100).toFixed(0)}%`} />
                         <Cell label="EMBEDDING" value={analysis.face.embedding ? `${analysis.face.embedding.length}-d vector` : "N/A"} />
+                      </div>
+                      {/* REVERSE SEARCH button */}
+                      {analysis.face.embedding && (
+                        <button
+                          onClick={async () => {
+                            setSearching(true);
+                            setSearchResults(null);
+                            try {
+                              const resp = await fetch(`${API_URL}/api/video/search-face`, {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ embedding: analysis.face!.embedding, top_k: 20 }),
+                              });
+                              if (resp.ok) {
+                                const data = await resp.json();
+                                setSearchResults(data.matches ?? []);
+                              }
+                            } catch (err) {
+                              console.error("Face search failed:", err);
+                            } finally {
+                              setSearching(false);
+                            }
+                          }}
+                          disabled={searching}
+                          className="w-full rounded-sm border border-[#ff2d78]/30 bg-[#ff2d78]/10 py-2 font-heading text-[10px] uppercase tracking-wider text-[#ff2d78] hover:bg-[#ff2d78]/20 disabled:opacity-50"
+                        >
+                          {searching ? "SEARCHING ALL CAMERAS..." : "🔍 SEARCH THIS FACE ACROSS ALL CAMERAS"}
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Search results */}
+                  {searchResults && (
+                    <div className="space-y-2">
+                      <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#ff2d78]">
+                        MATCHES FOUND: {searchResults.length}
+                      </h4>
+                      {searchResults.length === 0 && (
+                        <p className="font-data text-[10px] text-[#4a6a8a]">No matches in indexed videos</p>
+                      )}
+                      <div className="space-y-1.5 max-h-60 overflow-y-auto">
+                        {searchResults.map((match, i) => (
+                          <div key={i} className="flex items-center gap-2 rounded-sm border border-[#ff2d78]/15 bg-[#ff2d78]/5 p-2">
+                            {(match as Record<string, string>).thumbnail_b64 && (
+                              <img
+                                src={`data:image/jpeg;base64,${(match as Record<string, string>).thumbnail_b64}`}
+                                alt="match"
+                                className="size-10 rounded-sm object-cover border border-[#ff2d78]/20"
+                              />
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <p className="font-data text-[10px] text-[#ff2d78] truncate">
+                                {(match as Record<string, string>).video_file ?? "unknown"}
+                              </p>
+                              <p className="font-data text-[9px] text-[#4a6a8a]">
+                                {(match as Record<string, number>).timestamp_sec != null
+                                  ? `${Math.floor((match as Record<string, number>).timestamp_sec / 60)}:${(Math.floor((match as Record<string, number>).timestamp_sec) % 60).toString().padStart(2, "0")}`
+                                  : ""}
+                                {" — "}
+                                Similarity: {((match as Record<string, number>).similarity * 100).toFixed(0)}%
+                              </p>
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </div>
                   )}

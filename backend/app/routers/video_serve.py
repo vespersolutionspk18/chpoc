@@ -242,3 +242,42 @@ async def analyze_vehicle(
         results["vehicle_image_b64"] = base64.b64encode(contents).decode("ascii")
 
     return results
+
+
+from fastapi import Request
+
+
+@router.post("/search-face")
+async def search_face(request: Request):
+    """Proxy face embedding search to AI service."""
+    body = await request.body()
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{settings.AI_SERVICE_URL}/face/search",
+                content=body,
+                headers={"Content-Type": "application/json"},
+                timeout=10.0,
+            )
+            if resp.status_code == 200:
+                return resp.json()
+    except Exception as e:
+        logger.warning("Face search proxy failed: %s", e)
+    return {"matches": [], "index_size": 0}
+
+
+@router.post("/build-face-index")
+async def build_face_index():
+    """Trigger face index building on AI service."""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{settings.AI_SERVICE_URL}/face/index/build",
+                data={"frame_skip": "5"},
+                timeout=600.0,
+            )
+            if resp.status_code == 200:
+                return resp.json()
+    except Exception as e:
+        logger.warning("Face index build failed: %s", e)
+    return {"error": "Failed to build index"}
