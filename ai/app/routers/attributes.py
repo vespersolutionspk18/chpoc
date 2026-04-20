@@ -626,9 +626,8 @@ def _ensemble_gender(
 @router.post("/person")
 async def extract_person_attributes(image: UploadFile = File(...)):
     """
-    Extract ALL person attributes using Qwen2.5-VL-7B in a SINGLE call.
-    Replaces PAR + DeepFace + MiVOLO + 9x CLIP calls (~20s) with one VLM call (~2-3s).
-    The VLM understands South Asian context: shalwar kameez, topi, dupatta, niqab.
+    Extract person attributes using Qwen2.5-VL-7B — free-form description + dynamic attributes.
+    The VLM reports ONLY what it can see. No forced yes/no on uncertain attributes.
     """
     t0 = time.perf_counter()
     try:
@@ -638,7 +637,7 @@ async def extract_person_attributes(image: UploadFile = File(...)):
         if cv2_img is None:
             return {"error": "Could not decode uploaded image"}
 
-        # 1) 4x Lanczos upscale (fast, for display — VLM handles low-res fine)
+        # 4x Lanczos upscale for display
         h, w = cv2_img.shape[:2]
         upscaled_bgr = cv2.resize(cv2_img, (w * 4, h * 4), interpolation=cv2.INTER_LANCZOS4)
         _, buf = cv2.imencode(".jpg", upscaled_bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -646,30 +645,34 @@ async def extract_person_attributes(image: UploadFile = File(...)):
 
         pil_img = Image.fromarray(cv2.cvtColor(cv2_img, cv2.COLOR_BGR2RGB))
 
-        # 2) Qwen2.5-VL-7B — ALL attributes in ONE call
-        vlm_attrs = None
+        # Qwen2.5-VL-7B — description + dynamic attributes
         model, processor = _get_vlm()
         if model is not None:
             try:
                 prompt_text = (
-                    "Analyze this person carefully. Respond ONLY with a JSON object:\n"
-                    '{"gender":"male/female","gender_confidence":"high/medium/low",'
-                    '"age_group":"child/young_adult/adult/elderly","precise_age":25,'
-                    '"hair":"short/long/bald/covered","upper_clothing":"shirt/kurta/kameez/jacket/t-shirt/sweater/abaya/burqa/blouse",'
-                    '"upper_color":"white/black/blue/red/green/grey/brown/yellow/orange/pink/purple/beige",'
-                    '"lower_clothing":"trousers/shalwar/jeans/skirt/dress/shorts/robe",'
-                    '"lower_color":"white/black/blue/red/green/grey/brown",'
-                    '"sleeve_length":"short/long","clothing_style":"traditional/western/uniform/casual",'
-                    '"hat":false,"glasses":false,"bag":false,"backpack":false,'
-                    '"face_covered":false,"emotion":"neutral/happy/sad/angry/fearful/surprised"}\n\n'
+                    "Analyze this person image for a surveillance system. Return a JSON object with exactly two keys:\n\n"
+                    '{"description": "2-3 sentence description of what you see", "attributes": {...}}\n\n'
+                    "For 'attributes', include ONLY what you can clearly see. Use these keys when applicable:\n"
+                    "- gender (male/female)\n"
+                    "- approximate_age (e.g. '~45 years')\n"
+                    "- beard (e.g. 'yes, grey and full' or 'clean-shaven' or 'light stubble')\n"
+                    "- hair (e.g. 'short black', 'long brown', 'bald', 'covered by dupatta')\n"
+                    "- face_visible (yes/partially/no)\n"
+                    "- face_covering (e.g. 'niqab', 'surgical mask', 'scarf over mouth' — omit if face is uncovered)\n"
+                    "- headwear (e.g. 'white topi', 'black turban', 'baseball cap' — omit if none)\n"
+                    "- glasses (e.g. 'prescription glasses', 'sunglasses' — omit if none)\n"
+                    "- upper_body (e.g. 'white kurta with long sleeves', 'blue t-shirt', 'black abaya')\n"
+                    "- lower_body (e.g. 'white shalwar', 'blue jeans', 'grey trousers')\n"
+                    "- footwear (e.g. 'brown sandals', 'white sneakers' — omit if not visible)\n"
+                    "- carrying (e.g. 'black backpack', 'brown leather bag' — omit if nothing)\n"
+                    "- build (e.g. 'medium', 'heavy', 'slim')\n"
+                    "- clothing_style ('traditional Pakistani', 'western casual', 'uniform', etc.)\n"
+                    "- any other notable visual features\n\n"
                     "Rules:\n"
-                    "- Look at the WHOLE body for gender, not just the face\n"
-                    "- A person with a beard is MALE\n"
-                    "- Pakistani traditional clothing: shalwar kameez, kurta, dupatta, chaddar, topi\n"
-                    "- hat=true ONLY for rigid headwear (cap, topi, helmet, turban), NOT dupatta/scarf\n"
-                    "- bag=true ONLY if visibly carrying a bag or purse in hand\n"
-                    "- face_covered=true if face hidden by niqab, mask, or scarf\n"
-                    "- Be precise about colors you actually see"
+                    "- ONLY include attributes you can CLEARLY see. Do NOT guess.\n"
+                    "- If someone has a beard, they are MALE.\n"
+                    "- Describe colors precisely.\n"
+                    "- For the description, mention the most identifying features first."
                 )
 
                 messages = [{"role": "user", "content": [
@@ -681,64 +684,44 @@ async def extract_person_attributes(image: UploadFile = File(...)):
                 inputs = processor(text=[text], images=[pil_img], return_tensors="pt").to(model.device)
 
                 with torch.no_grad():
-                    output = model.generate(**inputs, max_new_tokens=300, do_sample=False)
+                    output = model.generate(**inputs, max_new_tokens=400, do_sample=False)
 
                 decoded = processor.batch_decode(output[:, inputs["input_ids"].shape[1]:],
                                                  skip_special_tokens=True)[0].strip()
                 logger.info("VLM person raw: %s", decoded)
 
-                json_match = re.search(r'\{[^{}]*\}', decoded)
+                # Parse JSON — handle nested braces for the attributes dict
+                json_match = re.search(r'\{.*\}', decoded, re.DOTALL)
                 if json_match:
-                    vlm_attrs = json.loads(json_match.group())
+                    data = json.loads(json_match.group())
+                    description = data.get("description", "")
+                    attributes = data.get("attributes", data)
+                    # If the model returned flat JSON without description/attributes keys
+                    if "description" not in data and "gender" in data:
+                        description = ""
+                        attributes = data
+
+                    elapsed = (time.perf_counter() - t0) * 1000
+                    logger.info("attributes/person: %.0f ms (VLM)", elapsed)
+                    return _sanitize({
+                        "upscaled_image_b64": upscaled_b64,
+                        "description": description,
+                        "attributes": attributes,
+                    })
             except Exception as e:
-                logger.warning("VLM person failed: %s", e)
+                logger.warning("VLM person failed: %s\n%s", e, traceback.format_exc())
 
-        # 3) Build response from VLM output (or CLIP fallback)
-        if vlm_attrs:
-            conf_map = {"high": 0.95, "medium": 0.75, "low": 0.5}
-            gc = conf_map.get(str(vlm_attrs.get("gender_confidence", "medium")).lower(), 0.75)
-
-            result = {
-                "upscaled_image_b64": upscaled_b64,
-                "gender": vlm_attrs.get("gender", "unknown"),
-                "gender_confidence": gc,
-                "age_group": vlm_attrs.get("age_group", "unknown"),
-                "precise_age": vlm_attrs.get("precise_age"),
-                "emotion": vlm_attrs.get("emotion", "unknown"),
-                "ethnicity": "unknown",
-                "hair": vlm_attrs.get("hair", "unknown"),
-                "upper_clothing": vlm_attrs.get("upper_clothing", "unknown"),
-                "upper_color": vlm_attrs.get("upper_color", "unknown"),
-                "lower_clothing": vlm_attrs.get("lower_clothing", "unknown"),
-                "lower_color": vlm_attrs.get("lower_color", "unknown"),
-                "hat": bool(vlm_attrs.get("hat", False)),
-                "glasses": bool(vlm_attrs.get("glasses", False)),
-                "backpack": bool(vlm_attrs.get("backpack", False)),
-                "bag": bool(vlm_attrs.get("bag", False)),
-                "sleeve_length": vlm_attrs.get("sleeve_length", "unknown"),
-                "clothing_style": vlm_attrs.get("clothing_style", "unknown"),
-                "face_covered": bool(vlm_attrs.get("face_covered", False)),
-            }
-        else:
-            # Fallback: minimal CLIP-only analysis
-            logger.info("VLM unavailable, using CLIP fallback for person")
-            pil_up = Image.fromarray(cv2.cvtColor(upscaled_bgr, cv2.COLOR_BGR2RGB))
-            gp = _classify_zero_shot(pil_up, ["a photo of a man or boy", "a photo of a woman or girl"])
-            result = {
-                "upscaled_image_b64": upscaled_b64,
-                "gender": "male" if gp[0] > gp[1] else "female",
-                "gender_confidence": round(float(max(gp)), 4),
-                "age_group": "unknown", "precise_age": None,
-                "emotion": "unknown", "ethnicity": "unknown",
-                "hair": "unknown", "upper_clothing": "unknown", "upper_color": "unknown",
-                "lower_clothing": "unknown", "lower_color": "unknown",
-                "hat": False, "glasses": False, "backpack": False, "bag": False,
-                "sleeve_length": "unknown", "clothing_style": "unknown", "face_covered": False,
-            }
-
+        # Fallback: minimal CLIP
+        pil_up = Image.fromarray(cv2.cvtColor(upscaled_bgr, cv2.COLOR_BGR2RGB))
+        gp = _classify_zero_shot(pil_up, ["a photo of a man or boy", "a photo of a woman or girl"])
         elapsed = (time.perf_counter() - t0) * 1000
-        logger.info("attributes/person: %.0f ms (VLM)", elapsed)
-        return _sanitize(result)
+        return _sanitize({
+            "upscaled_image_b64": upscaled_b64,
+            "description": "",
+            "attributes": {
+                "gender": "male" if gp[0] > gp[1] else "female",
+            },
+        })
     except Exception as e:
         logger.error("attributes/person unexpected error: %s\n%s", e, traceback.format_exc())
         return {"error": str(e)}
@@ -750,10 +733,7 @@ async def extract_person_attributes(image: UploadFile = File(...)):
 @router.post("/vehicle")
 async def extract_vehicle_attributes(image: UploadFile = File(...)):
     """
-    Extract vehicle attributes using:
-      1. 8x Real-ESRGAN upscale
-      2. Qwen2-VL-2B VLM for make, model, color, type, condition, damage
-      3. CLIP fallback if VLM unavailable
+    Extract vehicle attributes using Qwen2.5-VL-7B — description + dynamic attributes.
     """
     t0 = time.perf_counter()
     try:
@@ -763,71 +743,78 @@ async def extract_vehicle_attributes(image: UploadFile = File(...)):
         if cv2_img is None:
             return {"error": "Could not decode uploaded image"}
 
-        # 1) 8x upscale
-        try:
-            upscaled_bgr, upscaled_b64 = _upscale_and_encode(cv2_img)
-        except Exception as e:
-            logger.warning("Upscale failed, using original: %s", e)
-            upscaled_bgr = cv2_img
-            _, buf = cv2.imencode(".jpg", cv2_img, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            upscaled_b64 = base64.b64encode(buf.tobytes()).decode("ascii")
+        # 4x Lanczos upscale for display
+        h, w = cv2_img.shape[:2]
+        upscaled_bgr = cv2.resize(cv2_img, (w * 4, h * 4), interpolation=cv2.INTER_LANCZOS4)
+        _, buf = cv2.imencode(".jpg", upscaled_bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        upscaled_b64 = base64.b64encode(buf.tobytes()).decode("ascii")
 
-        upscaled_rgb = cv2.cvtColor(upscaled_bgr, cv2.COLOR_BGR2RGB)
-        pil_img = Image.fromarray(upscaled_rgb)
+        pil_img = Image.fromarray(cv2.cvtColor(cv2_img, cv2.COLOR_BGR2RGB))
 
-        # 2) Qwen2-VL-2B for ALL vehicle attributes in one pass
-        vlm_result = _run_vlm_vehicle(pil_img)
+        model, processor = _get_vlm()
+        if model is not None:
+            try:
+                prompt_text = (
+                    "Analyze this vehicle image for a surveillance system. Return a JSON object with exactly two keys:\n\n"
+                    '{"description": "2-3 sentence description", "attributes": {...}}\n\n'
+                    "For 'attributes', include ONLY what you can clearly see. Use these keys when applicable:\n"
+                    "- vehicle_type (sedan, SUV, hatchback, truck, van, bus, motorcycle, auto-rickshaw, chingchi, pickup, wagon, minivan)\n"
+                    "- make (e.g. 'Toyota', 'Suzuki', 'Honda', 'Sazgar' — omit if unsure)\n"
+                    "- model (e.g. 'Corolla', 'Mehran', 'City' — omit if unsure)\n"
+                    "- color (primary body color)\n"
+                    "- registration_number (if any text/numbers visible on plates or body)\n"
+                    "- condition (new, good, old, damaged, rusty)\n"
+                    "- damage (describe visible damage — omit if none)\n"
+                    "- direction (approaching, moving_away, parked, turning)\n"
+                    "- distinguishing_marks (stickers, dents, modifications, roof rack, etc. — omit if none)\n"
+                    "- any other notable features\n\n"
+                    "Rules:\n"
+                    "- Three-wheeled vehicles are auto-rickshaw or chingchi, NOT cars\n"
+                    "- ONLY include attributes you can CLEARLY see. Do NOT guess make/model.\n"
+                    "- If you see text/numbers on the vehicle, include them in registration_number\n"
+                    "- Describe colors precisely"
+                )
 
-        if vlm_result:
-            make_model = vlm_result.get("make_model", "unknown")
-            make_model_conf = vlm_result.get("make_model_confidence", 0.85)
-            color = vlm_result.get("color", "unknown")
-            color_conf = vlm_result.get("color_confidence", 0.85)
-            vehicle_type = vlm_result.get("vehicle_type", "unknown")
-            vehicle_type_conf = vlm_result.get("vehicle_type_confidence", 0.85)
-            condition = vlm_result.get("condition", "unknown")
-            damage_visible = vlm_result.get("damage_visible", False)
-        else:
-            # CLIP fallback
-            logger.info("VLM unavailable, using CLIP fallback for vehicle")
-            fb = _run_clip_vehicle_fallback(pil_img)
-            make_model = fb.get("make_model", "unknown")
-            make_model_conf = fb.get("make_model_confidence", 0.0)
-            color = fb.get("color", "unknown")
-            color_conf = fb.get("color_confidence", 0.0)
-            vehicle_type = fb.get("vehicle_type", "unknown")
-            vehicle_type_conf = fb.get("vehicle_type_confidence", 0.0)
-            condition = fb.get("condition", "unknown")
-            damage_visible = fb.get("damage_visible", False)
+                messages = [{"role": "user", "content": [
+                    {"type": "image", "image": pil_img},
+                    {"type": "text", "text": prompt_text},
+                ]}]
 
-        # Direction and vehicle class via CLIP (VLM doesn't handle these well)
-        try:
-            dir_probs = _classify_zero_shot(pil_img, _VEHICLE_DIRECTION_PROMPTS)
-            direction, _ = _pick_best(_VEHICLE_DIRECTION_LABELS, dir_probs)
-        except Exception:
-            direction = "unknown"
+                text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                inputs = processor(text=[text], images=[pil_img], return_tensors="pt").to(model.device)
 
-        try:
-            cls_probs = _classify_zero_shot(pil_img, _VEHICLE_CLASS_PROMPTS)
-            vehicle_class, _ = _pick_best(_VEHICLE_CLASS_LABELS, cls_probs)
-        except Exception:
-            vehicle_class = "private"
+                with torch.no_grad():
+                    output = model.generate(**inputs, max_new_tokens=400, do_sample=False)
 
+                decoded = processor.batch_decode(output[:, inputs["input_ids"].shape[1]:],
+                                                 skip_special_tokens=True)[0].strip()
+                logger.info("VLM vehicle raw: %s", decoded)
+
+                json_match = re.search(r'\{.*\}', decoded, re.DOTALL)
+                if json_match:
+                    data = json.loads(json_match.group())
+                    description = data.get("description", "")
+                    attributes = data.get("attributes", data)
+                    if "description" not in data and "vehicle_type" in data:
+                        description = ""
+                        attributes = data
+
+                    elapsed = (time.perf_counter() - t0) * 1000
+                    logger.info("attributes/vehicle: %.0f ms (VLM)", elapsed)
+                    return _sanitize({
+                        "upscaled_image_b64": upscaled_b64,
+                        "description": description,
+                        "attributes": attributes,
+                    })
+            except Exception as e:
+                logger.warning("VLM vehicle failed: %s\n%s", e, traceback.format_exc())
+
+        # Fallback
         elapsed = (time.perf_counter() - t0) * 1000
-        logger.info("attributes/vehicle: %.0f ms (VLM + CLIP)", elapsed)
-
         return _sanitize({
             "upscaled_image_b64": upscaled_b64,
-            "make_model": make_model,
-            "make_model_confidence": make_model_conf,
-            "color": color,
-            "color_confidence": color_conf,
-            "vehicle_type": vehicle_type,
-            "vehicle_type_confidence": vehicle_type_conf,
-            "direction": direction,
-            "condition": condition,
-            "damage_visible": damage_visible,
-            "vehicle_class": vehicle_class,
+            "description": "",
+            "attributes": {"vehicle_type": "unknown"},
         })
     except Exception as e:
         logger.error("attributes/vehicle unexpected error: %s\n%s", e, traceback.format_exc())

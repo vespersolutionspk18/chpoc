@@ -92,12 +92,14 @@ async def analyze_person(
                 timeout=60.0,
             )
             if resp.status_code == 200:
-                attrs = resp.json()
-                upscaled_b64 = attrs.pop("upscaled_image_b64", None)
+                data = resp.json()
+                upscaled_b64 = data.pop("upscaled_image_b64", None)
                 if upscaled_b64:
                     results["person_image_b64"] = upscaled_b64
                     upscaled_person_bytes = base64.b64decode(upscaled_b64)
-                results["attributes"] = attrs
+                # New format: {description, attributes} — pass through
+                results["description"] = data.get("description", "")
+                results["attributes"] = data.get("attributes", data)
             else:
                 logger.warning("Person attributes returned %d: %s", resp.status_code, resp.text[:200])
         except Exception as e:
@@ -231,12 +233,12 @@ async def analyze_vehicle(
                 timeout=60.0,
             )
             if resp.status_code == 200:
-                attrs = resp.json()
-                # Extract the 8x upscaled image from AI response
-                upscaled_b64 = attrs.pop("upscaled_image_b64", None)
+                data = resp.json()
+                upscaled_b64 = data.pop("upscaled_image_b64", None)
                 if upscaled_b64:
                     results["vehicle_image_b64"] = upscaled_b64
-                results["attributes"] = attrs
+                results["description"] = data.get("description", "")
+                results["attributes"] = data.get("attributes", data)
         except Exception as e:
             logger.warning("Vehicle attributes failed: %s", e)
 
