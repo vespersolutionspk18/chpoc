@@ -552,51 +552,61 @@ def _ensemble_gender(
     df_result: dict | None,
     mivolo_result: dict | None,
     clip_gender: dict | None,
+    face_covered: bool = False,
 ) -> tuple[str, float]:
-    """Ensemble gender from PAR + DeepFace + MiVOLO + CLIP using weighted voting."""
+    """Ensemble gender from PAR + DeepFace + MiVOLO + CLIP using weighted voting.
+    When face is covered, face-based models (DeepFace, MiVOLO) are unreliable —
+    CLIP and PAR (full-body) get boosted, face-based models get suppressed."""
     male_score = 0.0
     female_score = 0.0
 
-    # PAR model (weight 0.8 — often wrong on South Asian demographics)
+    # Dynamic weights based on face visibility
+    if face_covered:
+        w_par = 1.0      # full-body model — still useful
+        w_df = 0.1        # face-based — useless with covered face
+        w_mivolo = 0.1    # face-based — useless with covered face
+        w_clip = 3.0      # clothing context — DOMINANT signal
+    else:
+        w_par = 0.8
+        w_df = 0.8
+        w_mivolo = 1.0
+        w_clip = 2.0
+
+    # PAR model (full body — works regardless of face coverage)
     if par_result and par_result.get("gender"):
         par_g = par_result["gender"]
         par_c = float(par_result.get("gender_confidence", 0.5))
-        w = 0.8
         if par_g == "male":
-            male_score += par_c * w
+            male_score += par_c * w_par
         else:
-            female_score += par_c * w
+            female_score += par_c * w_par
 
-    # DeepFace (weight 0.8 — fails on covered faces)
+    # DeepFace (face-based — unreliable on covered faces)
     if df_result and df_result.get("deepface_gender"):
         df_g = df_result["deepface_gender"]
         df_c = float(df_result.get("deepface_gender_confidence", 0.5))
-        w = 0.8
         if df_g == "male":
-            male_score += df_c * w
+            male_score += df_c * w_df
         else:
-            female_score += df_c * w
+            female_score += df_c * w_df
 
-    # MiVOLO (weight 1.0 — decent but struggles with covered faces)
+    # MiVOLO (face+body — unreliable on covered faces)
     if mivolo_result and mivolo_result.get("mivolo_gender"):
         mv_g = mivolo_result["mivolo_gender"]
         mv_c = float(mivolo_result.get("mivolo_gender_confidence", 0.5))
-        w = 1.0
         if mv_g == "male":
-            male_score += mv_c * w
+            male_score += mv_c * w_mivolo
         else:
-            female_score += mv_c * w
+            female_score += mv_c * w_mivolo
 
-    # CLIP (weight 2.0 — HIGHEST weight, best at understanding clothing context)
-    # CLIP understands "woman in chaddar/dupatta" which PAR/DeepFace/MiVOLO cannot
+    # CLIP (clothing context — best signal, especially for covered faces)
     if clip_gender:
         cg = clip_gender["gender"]
         cc = float(clip_gender["confidence"])
-        w = 2.0
         if cg == "male":
-            male_score += cc * w
+            male_score += cc * w_clip
         else:
-            female_score += cc * w
+            female_score += cc * w_clip
 
     if male_score == 0 and female_score == 0:
         return "unknown", 0.0
@@ -710,7 +720,8 @@ async def extract_person_attributes(image: UploadFile = File(...)):
         # --- Merge results with GENDER ENSEMBLE ---
 
         # Gender: weighted ensemble of PAR + DeepFace + MiVOLO + CLIP
-        gender, gender_confidence = _ensemble_gender(par_result, df_result, mivolo_result, clip_gender)
+        # When face is covered, face-based models suppressed, CLIP dominates
+        gender, gender_confidence = _ensemble_gender(par_result, df_result, mivolo_result, clip_gender, face_covered)
 
         # Precise age: prefer MiVOLO (most accurate), then DeepFace
         precise_age = None

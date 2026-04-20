@@ -85,17 +85,11 @@ def get_upsampler():
 # ---------------------------------------------------------------------------
 
 def upscale(img: np.ndarray) -> np.ndarray:
-    """8x upscale using Real-ESRGAN (4x model run at outscale=8)."""
-    up = get_upsampler()
-    if up == "unavailable" or up is None:
-        h, w = img.shape[:2]
-        return cv2.resize(img, (w * 8, h * 8), interpolation=cv2.INTER_CUBIC)
-    try:
-        out, _ = up.enhance(img, outscale=8)
-        return out
-    except Exception:
-        h, w = img.shape[:2]
-        return cv2.resize(img, (w * 8, h * 8), interpolation=cv2.INTER_CUBIC)
+    """4x upscale using Lanczos interpolation — preserves text edges for OCR.
+    Real-ESRGAN hallucinates texture on text, making OCR worse. Lanczos
+    keeps sharp letter edges intact which is what OCR models expect."""
+    h, w = img.shape[:2]
+    return cv2.resize(img, (w * 4, h * 4), interpolation=cv2.INTER_LANCZOS4)
 
 
 def ocr_parseq(img_bgr: np.ndarray) -> tuple[str, float]:
