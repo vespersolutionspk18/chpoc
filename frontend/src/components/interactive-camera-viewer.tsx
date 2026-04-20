@@ -143,15 +143,21 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
     }
   }, []);
 
-  // Track time
+  // Track time + duration from video element events
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
     const onTime = () => setCurrentTime(v.currentTime);
-    const onDur = () => setDuration(v.duration || 0);
+    const onDur = () => { if (v.duration && isFinite(v.duration)) setDuration(v.duration); };
+    const onMeta = () => { if (v.duration && isFinite(v.duration)) setDuration(v.duration); };
     v.addEventListener("timeupdate", onTime);
     v.addEventListener("durationchange", onDur);
-    return () => { v.removeEventListener("timeupdate", onTime); v.removeEventListener("durationchange", onDur); };
+    v.addEventListener("loadedmetadata", onMeta);
+    return () => {
+      v.removeEventListener("timeupdate", onTime);
+      v.removeEventListener("durationchange", onDur);
+      v.removeEventListener("loadedmetadata", onMeta);
+    };
   }, []);
 
   // Play/pause toggle
@@ -170,24 +176,33 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
     }
   }, [runDetection]);
 
-  // Frame step (forward/backward)
+  // Frame step — wait for seek to complete before running detection
   const stepFrame = useCallback((dir: number) => {
     const v = videoRef.current;
     if (!v) return;
     if (!v.paused) { v.pause(); setPaused(true); }
-    // Assume ~25fps
-    v.currentTime = Math.max(0, Math.min(v.duration, v.currentTime + dir / 25));
-    setCurrentTime(v.currentTime);
-    runDetection();
+    const newTime = Math.max(0, Math.min(v.duration || 0, v.currentTime + dir / 25));
+    v.currentTime = newTime;
+    // Wait for the browser to actually seek before detecting
+    const onSeeked = () => {
+      setCurrentTime(v.currentTime);
+      runDetection();
+      v.removeEventListener("seeked", onSeeked);
+    };
+    v.addEventListener("seeked", onSeeked);
   }, [runDetection]);
 
-  // Seek
+  // Seek via scrub bar
   const onSeek = useCallback((t: number) => {
     const v = videoRef.current;
     if (!v) return;
     v.currentTime = t;
-    setCurrentTime(t);
-    if (paused) runDetection();
+    const onSeeked = () => {
+      setCurrentTime(v.currentTime);
+      if (paused) runDetection();
+      v.removeEventListener("seeked", onSeeked);
+    };
+    v.addEventListener("seeked", onSeeked);
   }, [paused, runDetection]);
 
   // Click on video → toggle pause
