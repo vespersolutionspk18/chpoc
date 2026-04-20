@@ -626,13 +626,9 @@ def _ensemble_gender(
 @router.post("/person")
 async def extract_person_attributes(image: UploadFile = File(...)):
     """
-    Extract person attributes using:
-      1. 8x Real-ESRGAN upscale
-      2. dsabarinathan PAR model (gender, age_group, hair, clothing, accessories)
-      3. DeepFace (precise_age, GENDER, emotion, ethnicity)
-      4. MiVOLO v2 (precise age + gender cross-check)
-      5. CLIP fallback for clothing_style + any PAR failures
-      6. Gender ensemble: weighted vote from PAR + DeepFace + MiVOLO
+    Extract ALL person attributes using Qwen2.5-VL-7B in a SINGLE call.
+    Replaces PAR + DeepFace + MiVOLO + 9x CLIP calls (~20s) with one VLM call (~2-3s).
+    The VLM understands South Asian context: shalwar kameez, topi, dupatta, niqab.
     """
     t0 = time.perf_counter()
     try:
@@ -642,153 +638,107 @@ async def extract_person_attributes(image: UploadFile = File(...)):
         if cv2_img is None:
             return {"error": "Could not decode uploaded image"}
 
-        # 1) 8x upscale
-        try:
-            upscaled_bgr, upscaled_b64 = _upscale_and_encode(cv2_img)
-        except Exception as e:
-            logger.warning("Upscale failed, using original: %s", e)
-            upscaled_bgr = cv2_img
-            _, buf = cv2.imencode(".jpg", cv2_img, [cv2.IMWRITE_JPEG_QUALITY, 85])
-            upscaled_b64 = base64.b64encode(buf.tobytes()).decode("ascii")
+        # 1) 4x Lanczos upscale (fast, for display — VLM handles low-res fine)
+        h, w = cv2_img.shape[:2]
+        upscaled_bgr = cv2.resize(cv2_img, (w * 4, h * 4), interpolation=cv2.INTER_LANCZOS4)
+        _, buf = cv2.imencode(".jpg", upscaled_bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        upscaled_b64 = base64.b64encode(buf.tobytes()).decode("ascii")
 
-        upscaled_rgb = cv2.cvtColor(upscaled_bgr, cv2.COLOR_BGR2RGB)
-        pil_img = Image.fromarray(upscaled_rgb)
+        pil_img = Image.fromarray(cv2.cvtColor(cv2_img, cv2.COLOR_BGR2RGB))
 
-        # 2) dsabarinathan PAR model
-        par_result = _run_par_model(upscaled_rgb)
-        if par_result is None:
-            logger.info("PAR model unavailable, using CLIP fallback for person attributes")
-            par_result = _run_clip_person_fallback(pil_img)
+        # 2) Qwen2.5-VL-7B — ALL attributes in ONE call
+        vlm_attrs = None
+        model, processor = _get_vlm()
+        if model is not None:
+            try:
+                prompt_text = (
+                    "Analyze this person carefully. Respond ONLY with a JSON object:\n"
+                    '{"gender":"male/female","gender_confidence":"high/medium/low",'
+                    '"age_group":"child/young_adult/adult/elderly","precise_age":25,'
+                    '"hair":"short/long/bald/covered","upper_clothing":"shirt/kurta/kameez/jacket/t-shirt/sweater/abaya/burqa/blouse",'
+                    '"upper_color":"white/black/blue/red/green/grey/brown/yellow/orange/pink/purple/beige",'
+                    '"lower_clothing":"trousers/shalwar/jeans/skirt/dress/shorts/robe",'
+                    '"lower_color":"white/black/blue/red/green/grey/brown",'
+                    '"sleeve_length":"short/long","clothing_style":"traditional/western/uniform/casual",'
+                    '"hat":false,"glasses":false,"bag":false,"backpack":false,'
+                    '"face_covered":false,"emotion":"neutral/happy/sad/angry/fearful/surprised"}\n\n'
+                    "Rules:\n"
+                    "- Look at the WHOLE body for gender, not just the face\n"
+                    "- A person with a beard is MALE\n"
+                    "- Pakistani traditional clothing: shalwar kameez, kurta, dupatta, chaddar, topi\n"
+                    "- hat=true ONLY for rigid headwear (cap, topi, helmet, turban), NOT dupatta/scarf\n"
+                    "- bag=true ONLY if visibly carrying a bag or purse in hand\n"
+                    "- face_covered=true if face hidden by niqab, mask, or scarf\n"
+                    "- Be precise about colors you actually see"
+                )
 
-        # 3) DeepFace for face-level attributes (NOW includes gender!)
-        df_result = _run_deepface(upscaled_rgb)
+                messages = [{"role": "user", "content": [
+                    {"type": "image", "image": pil_img},
+                    {"type": "text", "text": prompt_text},
+                ]}]
 
-        # 4) MiVOLO for precise age + gender
-        mivolo_result = _run_mivolo(upscaled_rgb)
+                text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                inputs = processor(text=[text], images=[pil_img], return_tensors="pt").to(model.device)
 
-        # 5) CLIP for ALL contextual attributes (batched — one model, multiple queries)
-        # CLIP understands South Asian clothing context that PAR cannot
+                with torch.no_grad():
+                    output = model.generate(**inputs, max_new_tokens=300, do_sample=False)
 
-        # Clothing style
-        try:
-            style_probs = _classify_zero_shot(pil_img, _STYLE_PROMPTS)
-            clothing_style, _ = _pick_best(_STYLE_LABELS, style_probs)
-        except Exception:
-            clothing_style = "unknown"
+                decoded = processor.batch_decode(output[:, inputs["input_ids"].shape[1]:],
+                                                 skip_special_tokens=True)[0].strip()
+                logger.info("VLM person raw: %s", decoded)
 
-        # Hat — specifically rigid headwear, NOT dupattas/chaddars/scarves
-        try:
-            hat_probs = _classify_zero_shot(pil_img, [
-                "person wearing a rigid hat or cap or topi or helmet or turban on their head",
-                "person without any hat or cap on their head",
-            ])
-            clip_hat = bool(hat_probs[0] > hat_probs[1])
-            par_result["hat"] = clip_hat  # CLIP overrides PAR completely for hats
-        except Exception:
-            pass
+                json_match = re.search(r'\{[^{}]*\}', decoded)
+                if json_match:
+                    vlm_attrs = json.loads(json_match.group())
+            except Exception as e:
+                logger.warning("VLM person failed: %s", e)
 
-        # Face covered
-        try:
-            fc_probs = _classify_zero_shot(pil_img, [
-                "person with face covered by mask or scarf or veil or niqab",
-                "person with uncovered visible face",
-            ])
-            face_covered = bool(fc_probs[0] > fc_probs[1])
-        except Exception:
-            face_covered = False
+        # 3) Build response from VLM output (or CLIP fallback)
+        if vlm_attrs:
+            conf_map = {"high": 0.95, "medium": 0.75, "low": 0.5}
+            gc = conf_map.get(str(vlm_attrs.get("gender_confidence", "medium")).lower(), 0.75)
 
-        # Gender
-        clip_gender = None
-        try:
-            gp = _classify_zero_shot(pil_img, [
-                "a photo of a man or boy",
-                "a photo of a woman or girl",
-            ])
-            clip_gender = {
-                "gender": "male" if gp[0] > gp[1] else "female",
-                "confidence": round(float(max(gp)), 4),
+            result = {
+                "upscaled_image_b64": upscaled_b64,
+                "gender": vlm_attrs.get("gender", "unknown"),
+                "gender_confidence": gc,
+                "age_group": vlm_attrs.get("age_group", "unknown"),
+                "precise_age": vlm_attrs.get("precise_age"),
+                "emotion": vlm_attrs.get("emotion", "unknown"),
+                "ethnicity": "unknown",
+                "hair": vlm_attrs.get("hair", "unknown"),
+                "upper_clothing": vlm_attrs.get("upper_clothing", "unknown"),
+                "upper_color": vlm_attrs.get("upper_color", "unknown"),
+                "lower_clothing": vlm_attrs.get("lower_clothing", "unknown"),
+                "lower_color": vlm_attrs.get("lower_color", "unknown"),
+                "hat": bool(vlm_attrs.get("hat", False)),
+                "glasses": bool(vlm_attrs.get("glasses", False)),
+                "backpack": bool(vlm_attrs.get("backpack", False)),
+                "bag": bool(vlm_attrs.get("bag", False)),
+                "sleeve_length": vlm_attrs.get("sleeve_length", "unknown"),
+                "clothing_style": vlm_attrs.get("clothing_style", "unknown"),
+                "face_covered": bool(vlm_attrs.get("face_covered", False)),
             }
-        except Exception:
-            pass
-
-        # CLIP clothing override — PAR is trained on Western clothing only
-        # Replace PAR's "long sleeve / trousers / western" with actual descriptions
-        try:
-            # Upper clothing type
-            upper_probs = _classify_zero_shot(pil_img, [
-                "person wearing a shirt", "person wearing a kurta or kameez",
-                "person wearing a jacket or coat", "person wearing a t-shirt",
-                "person wearing a sweater", "person wearing an abaya or burqa",
-            ])
-            upper_labels = ["shirt", "kurta/kameez", "jacket", "t-shirt", "sweater", "abaya/burqa"]
-            par_result["upper_clothing"] = upper_labels[int(np.argmax(upper_probs))]
-
-            # Upper color — CLIP
-            uc_probs = _classify_zero_shot(pil_img, [f"person wearing {c} on top" for c in _COLORS])
-            par_result["upper_color"] = _COLORS[int(np.argmax(uc_probs))]
-
-            # Lower clothing type
-            lower_probs = _classify_zero_shot(pil_img, [
-                "person wearing trousers or pants", "person wearing shalwar",
-                "person wearing jeans", "person wearing a skirt or dress",
-                "person wearing shorts", "person wearing a long robe or gown",
-            ])
-            lower_labels = ["trousers", "shalwar", "jeans", "skirt/dress", "shorts", "robe/gown"]
-            par_result["lower_clothing"] = lower_labels[int(np.argmax(lower_probs))]
-
-            # Lower color — CLIP
-            lc_probs = _classify_zero_shot(pil_img, [f"person wearing {c} on bottom" for c in _COLORS])
-            par_result["lower_color"] = _COLORS[int(np.argmax(lc_probs))]
-
-            # Sleeve length — CLIP
-            sl_probs = _classify_zero_shot(pil_img, [
-                "person wearing short sleeves", "person wearing long sleeves",
-            ])
-            par_result["sleeve_length"] = "short" if sl_probs[0] > sl_probs[1] else "long"
-        except Exception as e:
-            logger.warning("CLIP clothing override failed: %s", e)
-
-        # --- Merge results with GENDER ENSEMBLE ---
-
-        # Gender: weighted ensemble of PAR + DeepFace + MiVOLO + CLIP
-        # When face is covered, face-based models suppressed, CLIP dominates
-        gender, gender_confidence = _ensemble_gender(par_result, df_result, mivolo_result, clip_gender, face_covered)
-
-        # Precise age: prefer MiVOLO (most accurate), then DeepFace
-        precise_age = None
-        if mivolo_result and mivolo_result.get("mivolo_age"):
-            precise_age = int(mivolo_result["mivolo_age"])
-        elif df_result and df_result.get("precise_age"):
-            precise_age = df_result["precise_age"]
-
-        # Emotion and ethnicity from DeepFace
-        emotion = df_result.get("emotion", "unknown") if df_result else "unknown"
-        ethnicity = df_result.get("ethnicity", "unknown") if df_result else "unknown"
+        else:
+            # Fallback: minimal CLIP-only analysis
+            logger.info("VLM unavailable, using CLIP fallback for person")
+            pil_up = Image.fromarray(cv2.cvtColor(upscaled_bgr, cv2.COLOR_BGR2RGB))
+            gp = _classify_zero_shot(pil_up, ["a photo of a man or boy", "a photo of a woman or girl"])
+            result = {
+                "upscaled_image_b64": upscaled_b64,
+                "gender": "male" if gp[0] > gp[1] else "female",
+                "gender_confidence": round(float(max(gp)), 4),
+                "age_group": "unknown", "precise_age": None,
+                "emotion": "unknown", "ethnicity": "unknown",
+                "hair": "unknown", "upper_clothing": "unknown", "upper_color": "unknown",
+                "lower_clothing": "unknown", "lower_color": "unknown",
+                "hat": False, "glasses": False, "backpack": False, "bag": False,
+                "sleeve_length": "unknown", "clothing_style": "unknown", "face_covered": False,
+            }
 
         elapsed = (time.perf_counter() - t0) * 1000
-        logger.info("attributes/person: %.0f ms (PAR + DeepFace + MiVOLO + CLIP)", elapsed)
-
-        return _sanitize({
-            "upscaled_image_b64": upscaled_b64,
-            "gender": gender,
-            "gender_confidence": gender_confidence,
-            "age_group": par_result.get("age_group", "unknown"),
-            "precise_age": precise_age,
-            "emotion": emotion,
-            "ethnicity": ethnicity,
-            "hair": par_result.get("hair", "unknown"),
-            "upper_clothing": par_result.get("upper_clothing", "unknown"),
-            "upper_color": par_result.get("upper_color", "unknown"),
-            "lower_clothing": par_result.get("lower_clothing", "unknown"),
-            "lower_color": par_result.get("lower_color", "unknown"),
-            "hat": par_result.get("hat", False),
-            "glasses": par_result.get("glasses", False),
-            "backpack": par_result.get("backpack", False),
-            "bag": par_result.get("bag", False),
-            "sleeve_length": par_result.get("sleeve_length", "unknown"),
-            "clothing_style": clothing_style,
-            "face_covered": face_covered,
-        })
+        logger.info("attributes/person: %.0f ms (VLM)", elapsed)
+        return _sanitize(result)
     except Exception as e:
         logger.error("attributes/person unexpected error: %s\n%s", e, traceback.format_exc())
         return {"error": str(e)}

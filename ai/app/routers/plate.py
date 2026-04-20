@@ -85,11 +85,11 @@ def get_upsampler():
 # ---------------------------------------------------------------------------
 
 def upscale(img: np.ndarray) -> np.ndarray:
-    """4x upscale using Lanczos interpolation — preserves text edges for OCR.
+    """8x upscale using Lanczos interpolation — preserves text edges for OCR.
     Real-ESRGAN hallucinates texture on text, making OCR worse. Lanczos
     keeps sharp letter edges intact which is what OCR models expect."""
     h, w = img.shape[:2]
-    return cv2.resize(img, (w * 4, h * 4), interpolation=cv2.INTER_LANCZOS4)
+    return cv2.resize(img, (w * 8, h * 8), interpolation=cv2.INTER_LANCZOS4)
 
 
 def ocr_parseq(img_bgr: np.ndarray) -> tuple[str, float]:
@@ -155,8 +155,8 @@ def dual_ocr(img_bgr: np.ndarray) -> tuple[str, float]:
 def encode_plate_image(img_bgr: np.ndarray) -> str:
     """Encode a plate crop as base64 JPEG for frontend display."""
     h, w = img_bgr.shape[:2]
-    if w > 400:
-        scale = 400 / w
+    if w > 800:
+        scale = 800 / w
         img_bgr = cv2.resize(
             img_bgr, (400, int(h * scale)), interpolation=cv2.INTER_AREA
         )

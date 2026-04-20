@@ -92,6 +92,8 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
   const [videoReady, setVideoReady] = useState(false);
   const [videoSize, setVideoSize] = useState({ w: 1280, h: 720 });
   const [error, setError] = useState<string | null>(null);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
 
   const videoUrl = `${API_URL}/api/video/file/${camera.id}`;
 
@@ -175,12 +177,24 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
     const v = videoRef.current;
     if (v) {
       setVideoSize({ w: v.videoWidth, h: v.videoHeight });
+      setDuration(v.duration || 0);
       setVideoReady(true);
     }
   }, []);
 
-  // Click on video → toggle pause
-  const onVideoClick = useCallback(() => {
+  // Track time
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const onTime = () => setCurrentTime(v.currentTime);
+    const onDur = () => setDuration(v.duration || 0);
+    v.addEventListener("timeupdate", onTime);
+    v.addEventListener("durationchange", onDur);
+    return () => { v.removeEventListener("timeupdate", onTime); v.removeEventListener("durationchange", onDur); };
+  }, []);
+
+  // Play/pause toggle
+  const togglePause = useCallback(() => {
     const v = videoRef.current;
     if (!v) return;
     if (v.paused) {
@@ -191,10 +205,34 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
     } else {
       v.pause();
       setPaused(true);
-      // Run detection on paused frame
       runDetection();
     }
   }, [runDetection]);
+
+  // Frame step (forward/backward)
+  const stepFrame = useCallback((dir: number) => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (!v.paused) { v.pause(); setPaused(true); }
+    // Assume ~25fps
+    v.currentTime = Math.max(0, Math.min(v.duration, v.currentTime + dir / 25));
+    setCurrentTime(v.currentTime);
+    runDetection();
+  }, [runDetection]);
+
+  // Seek
+  const onSeek = useCallback((t: number) => {
+    const v = videoRef.current;
+    if (!v) return;
+    v.currentTime = t;
+    setCurrentTime(t);
+    if (paused) runDetection();
+  }, [paused, runDetection]);
+
+  // Click on video → toggle pause
+  const onVideoClick = useCallback(() => {
+    togglePause();
+  }, [togglePause]);
 
   // Click a detection box → analyze
   const onDetClick = useCallback(async (det: Detection, e: React.MouseEvent) => {
@@ -392,6 +430,37 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
               {error}
             </div>
           )}
+        </div>
+
+        {/* Video controls bar */}
+        <div className="flex h-10 shrink-0 items-center gap-2 border-t border-[#00f0ff]/15 bg-[#020a18] px-3" onClick={(e) => e.stopPropagation()}>
+          {/* Play/Pause */}
+          <button onClick={togglePause} className="rounded-sm border border-[#00f0ff]/20 bg-[#00f0ff]/5 px-2 py-1 font-heading text-[9px] uppercase tracking-wider text-[#00f0ff] hover:bg-[#00f0ff]/15">
+            {paused ? "▶ PLAY" : "⏸ PAUSE"}
+          </button>
+          {/* Frame step */}
+          <button onClick={() => stepFrame(-1)} className="rounded-sm border border-white/10 px-1.5 py-1 font-data text-[10px] text-[#4a6a8a] hover:text-white hover:bg-white/5">
+            ◀
+          </button>
+          <button onClick={() => stepFrame(1)} className="rounded-sm border border-white/10 px-1.5 py-1 font-data text-[10px] text-[#4a6a8a] hover:text-white hover:bg-white/5">
+            ▶
+          </button>
+          {/* Timeline scrub */}
+          <input
+            type="range"
+            min={0}
+            max={duration || 1}
+            step={0.04}
+            value={currentTime}
+            onChange={(e) => onSeek(parseFloat(e.target.value))}
+            className="flex-1 h-1 appearance-none bg-[#00f0ff]/20 rounded-sm cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-3 [&::-webkit-slider-thumb]:h-3 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-[#00f0ff]"
+          />
+          {/* Time display */}
+          <span className="font-data text-[10px] text-[#4a6a8a] tabular-nums">
+            {Math.floor(currentTime / 60)}:{(Math.floor(currentTime) % 60).toString().padStart(2, "0")}
+            {" / "}
+            {Math.floor(duration / 60)}:{(Math.floor(duration) % 60).toString().padStart(2, "0")}
+          </span>
         </div>
       </div>
 
