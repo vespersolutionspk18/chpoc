@@ -183,20 +183,20 @@ def _check_deepface():
 
 
 def _get_vlm():
-    """Load Qwen2-VL-2B-Instruct for vehicle attribute extraction."""
+    """Load Qwen2.5-VL-7B-Instruct for vehicle attribute extraction."""
     global _vlm_model, _vlm_processor
     if _vlm_model is None:
         try:
-            from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
-            _vlm_model = Qwen2VLForConditionalGeneration.from_pretrained(
-                "Qwen/Qwen2-VL-2B-Instruct",
-                torch_dtype=torch.float16,
+            from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+            _vlm_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                "Qwen/Qwen2.5-VL-7B-Instruct",
+                torch_dtype=torch.bfloat16,
                 device_map="auto",
             )
-            _vlm_processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-2B-Instruct")
-            logger.info("Qwen2-VL-2B-Instruct loaded for vehicle analysis")
+            _vlm_processor = AutoProcessor.from_pretrained("Qwen/Qwen2.5-VL-7B-Instruct")
+            logger.info("Qwen2.5-VL-7B-Instruct loaded for vehicle analysis")
         except Exception as e:
-            logger.warning("Qwen2-VL-2B failed: %s — will fall back to CLIP", e)
+            logger.warning("Qwen2.5-VL-7B failed: %s — will fall back to CLIP", e)
             _vlm_model = "FAILED"
     return (_vlm_model, _vlm_processor) if _vlm_model != "FAILED" else (None, None)
 
@@ -458,17 +458,22 @@ def _run_mivolo(rgb_np: np.ndarray) -> dict | None:
 
 
 def _run_vlm_vehicle(pil_img: Image.Image) -> dict | None:
-    """Run Qwen2-VL-2B to identify vehicle make, model, color, type."""
+    """Run Qwen2.5-VL-7B to identify vehicle make, model, color, type."""
     model, processor = _get_vlm()
     if model is None:
         return None
     try:
         prompt_text = (
-            "Identify this vehicle precisely. Respond ONLY in JSON format:\n"
-            '{"make":"...","model":"...","color":"...","type":"...","condition":"...","damage":"no/yes"}\n'
-            "For type use: sedan, SUV, hatchback, truck, van, bus, motorcycle, rickshaw, chingchi, pickup, wagon.\n"
-            "For Pakistani vehicles: Suzuki Mehran/Alto/Cultus/Bolan/WagonR, Toyota Corolla/Vitz/Yaris, Honda City/Civic.\n"
-            "Be precise about the color you see."
+            "Look at this vehicle image carefully. What exact vehicle is this?\n"
+            "Respond ONLY with a JSON object, nothing else:\n"
+            '{"make":"...","model":"...","color":"...","type":"...","condition":"...","damage":"no/yes","confidence":"high/medium/low"}\n\n'
+            "Rules:\n"
+            "- For type use ONLY one of: sedan, SUV, hatchback, truck, van, bus, motorcycle, auto-rickshaw, chingchi, pickup, wagon, minivan\n"
+            "- If this is a three-wheeled vehicle, type MUST be auto-rickshaw or chingchi\n"
+            "- If you cannot identify the exact make/model, say 'unknown'\n"
+            "- Do NOT guess the make/model — only state it if you are sure\n"
+            "- For color, describe the PRIMARY body color you actually see\n"
+            "- confidence: high = very sure, medium = somewhat sure, low = guessing"
         )
 
         messages = [{"role": "user", "content": [
@@ -480,23 +485,33 @@ def _run_vlm_vehicle(pil_img: Image.Image) -> dict | None:
         inputs = processor(text=[text], images=[pil_img], return_tensors="pt").to(model.device)
 
         with torch.no_grad():
-            output = model.generate(**inputs, max_new_tokens=200, do_sample=False)
+            output = model.generate(**inputs, max_new_tokens=250, do_sample=False)
 
         decoded = processor.batch_decode(output[:, inputs["input_ids"].shape[1]:],
                                          skip_special_tokens=True)[0].strip()
         logger.info("VLM raw output: %s", decoded)
 
-        # Parse JSON from response (handle markdown fences)
-        json_match = re.search(r'\{[^}]+\}', decoded)
+        # Parse JSON from response (handle markdown fences, nested braces)
+        json_match = re.search(r'\{[^{}]*\}', decoded)
         if json_match:
             data = json.loads(json_match.group())
+
+            # Map confidence string to numeric
+            conf_str = data.get("confidence", "medium").lower()
+            conf_map = {"high": 0.9, "medium": 0.7, "low": 0.4}
+            conf = conf_map.get(conf_str, 0.7)
+
+            make = data.get("make", "unknown")
+            model_name = data.get("model", "")
+            make_model = f"{make} {model_name}".strip() if make != "unknown" else "unknown"
+
             return {
-                "make_model": f"{data.get('make', 'unknown')} {data.get('model', '')}".strip(),
-                "make_model_confidence": 0.85,
+                "make_model": make_model,
+                "make_model_confidence": conf,
                 "color": data.get("color", "unknown").lower(),
-                "color_confidence": 0.85,
-                "vehicle_type": data.get("type", "unknown").lower(),
-                "vehicle_type_confidence": 0.85,
+                "color_confidence": conf,
+                "vehicle_type": data.get("type", "unknown").lower().replace("-", "_"),
+                "vehicle_type_confidence": conf,
                 "condition": data.get("condition", "unknown").lower(),
                 "damage_visible": str(data.get("damage", "no")).lower() in ("yes", "true"),
             }

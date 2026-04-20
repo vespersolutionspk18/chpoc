@@ -255,6 +255,22 @@ async def read_plate(image: UploadFile = File(...)):
                 }
                 best_plate_b64 = encode_plate_image(upscaled)
 
+    # ----- Path C: YOLO found nothing — try OCR on the full upscaled image -----
+    # Catches hand-painted plates, non-standard plates (rickshaws, chingchis)
+    if not best_text:
+        logger.info("YOLO found no plate — trying full-image OCR fallback")
+        try:
+            upscaled_full = upscale(frame)
+            text, conf = dual_ocr(upscaled_full)
+            if len(text) >= 2:
+                best_text = text
+                best_conf = conf * 0.7  # lower confidence since no detector confirmation
+                best_bbox = {"x": 0, "y": 0, "w": round(float(w), 1), "h": round(float(h), 1)}
+                best_plate_b64 = encode_plate_image(upscaled_full)
+                logger.info("Full-image OCR fallback: '%s' (%.0f%%)", text, conf * 100)
+        except Exception as e:
+            logger.warning("Full-image OCR fallback failed: %s", e)
+
     elapsed = (time.perf_counter() - t0) * 1000
     logger.info(
         "Plate: '%s' (%.0f%%) in %.0fms [YOLO+ESRGAN+DualOCR]",
