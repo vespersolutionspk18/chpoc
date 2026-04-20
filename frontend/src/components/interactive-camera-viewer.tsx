@@ -30,6 +30,7 @@ interface PersonAttributes {
   backpack: boolean;
   bag: boolean;
   clothing_style: string;
+  face_covered: boolean;
   // DeepFace (from face)
   precise_age: number | null;
   emotion: string | null;
@@ -206,13 +207,36 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
     canvas.height = video.videoHeight;
     ctx.drawImage(video, 0, 0);
 
-    const { x, y, w, h } = det.bbox;
+    let { x: cx, y: cy, w: cw, h: ch } = det.bbox;
+
+    // For persons: pad 20% above (hats) and 5% sides; for vehicles: pad 10% all sides (plates)
+    if (det.object_class === "person") {
+      const padTop = ch * 0.2;
+      const padSide = cw * 0.05;
+      cy = Math.max(0, cy - padTop);
+      ch = ch + padTop;
+      cx = Math.max(0, cx - padSide);
+      cw = cw + padSide * 2;
+    } else {
+      const pad = Math.max(cw, ch) * 0.1;
+      cx = Math.max(0, cx - pad);
+      cy = Math.max(0, cy - pad);
+      cw = cw + pad * 2;
+      ch = ch + pad * 2;
+    }
+
+    // Clamp to frame
+    cx = Math.max(0, cx);
+    cy = Math.max(0, cy);
+    cw = Math.min(cw, canvas.width - cx);
+    ch = Math.min(ch, canvas.height - cy);
+
     const crop = document.createElement("canvas");
-    crop.width = Math.max(1, Math.round(w));
-    crop.height = Math.max(1, Math.round(h));
+    crop.width = Math.max(1, Math.round(cw));
+    crop.height = Math.max(1, Math.round(ch));
     const cctx = crop.getContext("2d");
     if (!cctx) { setAnalyzing(false); return; }
-    cctx.drawImage(canvas, x, y, w, h, 0, 0, crop.width, crop.height);
+    cctx.drawImage(canvas, cx, cy, cw, ch, 0, 0, crop.width, crop.height);
 
     crop.toBlob(async (blob) => {
       if (!blob) { setAnalyzing(false); return; }
@@ -474,6 +498,7 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
                           <Cell label="HAIR" value={attrs.hair?.replace(/_/g, " ") ?? "N/A"} />
                           <Cell label="GLASSES" value={attrs.glasses != null ? (attrs.glasses ? "Yes" : "No") : "N/A"} />
                           <Cell label="HAT" value={attrs.hat != null ? (attrs.hat ? "Yes" : "No") : "N/A"} />
+                          <Cell label="FACE COVERED" value={attrs.face_covered != null ? (attrs.face_covered ? "Yes" : "No") : "N/A"} color={attrs.face_covered ? "#ff2d78" : "#00ff88"} />
                         </div>
                       </div>
 

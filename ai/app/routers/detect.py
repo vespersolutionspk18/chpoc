@@ -23,13 +23,17 @@ def get_yolo():
     return _yolo_model
 
 # COCO class names to our types
+# Rickshaws/chingchis may be detected as car, motorcycle, or truck by YOLO
 COCO_MAP = {
     0: "person",
     1: "bike",      # bicycle
-    2: "vehicle",   # car
-    3: "bike",      # motorcycle
+    2: "vehicle",   # car (also catches rickshaws/chingchis)
+    3: "vehicle",   # motorcycle — map to vehicle so rickshaws on 3-wheels get caught
+    4: "vehicle",   # airplane — unlikely but safe
     5: "vehicle",   # bus
+    6: "vehicle",   # train
     7: "vehicle",   # truck
+    8: "vehicle",   # boat
     24: "bag",      # backpack
     26: "bag",      # handbag
     28: "bag",      # suitcase

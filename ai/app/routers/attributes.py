@@ -636,12 +636,22 @@ async def extract_person_attributes(image: UploadFile = File(...)):
         # 4) MiVOLO for precise age + gender
         mivolo_result = _run_mivolo(upscaled_rgb)
 
-        # 5) CLIP for clothing style
+        # 5) CLIP for clothing style + face covered detection
         try:
             style_probs = _classify_zero_shot(pil_img, _STYLE_PROMPTS)
             clothing_style, _ = _pick_best(_STYLE_LABELS, style_probs)
         except Exception:
             clothing_style = "unknown"
+
+        # Face covered: mask, scarf, niqab, veil
+        try:
+            fc_probs = _classify_zero_shot(pil_img, [
+                "person with face covered by mask or scarf or veil or niqab",
+                "person with uncovered visible face",
+            ])
+            face_covered = bool(fc_probs[0] > fc_probs[1])
+        except Exception:
+            face_covered = False
 
         # --- Merge results with GENDER ENSEMBLE ---
 
@@ -681,6 +691,7 @@ async def extract_person_attributes(image: UploadFile = File(...)):
             "bag": par_result.get("bag", False),
             "sleeve_length": par_result.get("sleeve_length", "unknown"),
             "clothing_style": clothing_style,
+            "face_covered": face_covered,
         })
     except Exception as e:
         logger.error("attributes/person unexpected error: %s\n%s", e, traceback.format_exc())
