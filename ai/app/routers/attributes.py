@@ -551,56 +551,66 @@ def _ensemble_gender(
     par_result: dict | None,
     df_result: dict | None,
     mivolo_result: dict | None,
+    clip_gender: dict | None,
 ) -> tuple[str, float]:
-    """Ensemble gender from PAR + DeepFace + MiVOLO using weighted voting."""
+    """Ensemble gender from PAR + DeepFace + MiVOLO + CLIP using weighted voting."""
     male_score = 0.0
     female_score = 0.0
-    total_weight = 0.0
 
-    # PAR model (weight 1.0 — trained on full body)
+    # PAR model (weight 0.8 — often wrong on South Asian demographics)
     if par_result and par_result.get("gender"):
         par_g = par_result["gender"]
-        par_c = par_result.get("gender_confidence", 0.5)
+        par_c = float(par_result.get("gender_confidence", 0.5))
+        w = 0.8
         if par_g == "male":
-            male_score += par_c
+            male_score += par_c * w
         else:
-            female_score += par_c
-        total_weight += 1.0
+            female_score += par_c * w
 
-    # DeepFace (weight 1.2 — face-based, very reliable for gender)
+    # DeepFace (weight 0.8 — fails on covered faces)
     if df_result and df_result.get("deepface_gender"):
         df_g = df_result["deepface_gender"]
-        df_c = df_result.get("deepface_gender_confidence", 0.5)
-        w = 1.2
+        df_c = float(df_result.get("deepface_gender_confidence", 0.5))
+        w = 0.8
         if df_g == "male":
             male_score += df_c * w
         else:
             female_score += df_c * w
-        total_weight += w
 
-    # MiVOLO (weight 1.5 — specialized age+gender model, highest accuracy)
+    # MiVOLO (weight 1.0 — decent but struggles with covered faces)
     if mivolo_result and mivolo_result.get("mivolo_gender"):
         mv_g = mivolo_result["mivolo_gender"]
-        mv_c = mivolo_result.get("mivolo_gender_confidence", 0.5)
-        w = 1.5
+        mv_c = float(mivolo_result.get("mivolo_gender_confidence", 0.5))
+        w = 1.0
         if mv_g == "male":
             male_score += mv_c * w
         else:
             female_score += mv_c * w
-        total_weight += w
 
-    if total_weight == 0:
+    # CLIP (weight 2.0 — HIGHEST weight, best at understanding clothing context)
+    # CLIP understands "woman in chaddar/dupatta" which PAR/DeepFace/MiVOLO cannot
+    if clip_gender:
+        cg = clip_gender["gender"]
+        cc = float(clip_gender["confidence"])
+        w = 2.0
+        if cg == "male":
+            male_score += cc * w
+        else:
+            female_score += cc * w
+
+    if male_score == 0 and female_score == 0:
         return "unknown", 0.0
 
-    gender = "male" if male_score >= female_score else "female"
+    gender = "male" if male_score > female_score else "female"
     confidence = round(max(male_score, female_score) / (male_score + female_score + 1e-10), 4)
 
     logger.info(
-        "Gender ensemble: male=%.2f female=%.2f -> %s (%.0f%%) [PAR=%s, DeepFace=%s, MiVOLO=%s]",
+        "Gender ensemble: male=%.2f female=%.2f -> %s (%.0f%%) [PAR=%s, DF=%s, MiV=%s, CLIP=%s]",
         male_score, female_score, gender, confidence * 100,
         par_result.get("gender", "N/A") if par_result else "N/A",
         df_result.get("deepface_gender", "N/A") if df_result else "N/A",
         mivolo_result.get("mivolo_gender", "N/A") if mivolo_result else "N/A",
+        clip_gender.get("gender", "N/A") if clip_gender else "N/A",
     )
     return gender, confidence
 
@@ -682,10 +692,25 @@ async def extract_person_attributes(image: UploadFile = File(...)):
         except Exception:
             face_covered = False
 
+        # CLIP gender (strongest signal for South Asian clothing context)
+        clip_gender = None
+        try:
+            gp = _classify_zero_shot(pil_img, [
+                "a photo of a man or boy",
+                "a photo of a woman or girl",
+            ])
+            clip_gender = {
+                "gender": "male" if gp[0] > gp[1] else "female",
+                "confidence": round(float(max(gp)), 4),
+            }
+            logger.info("CLIP gender: %s (%.0f%%)", clip_gender["gender"], clip_gender["confidence"] * 100)
+        except Exception:
+            pass
+
         # --- Merge results with GENDER ENSEMBLE ---
 
-        # Gender: weighted ensemble of PAR + DeepFace + MiVOLO
-        gender, gender_confidence = _ensemble_gender(par_result, df_result, mivolo_result)
+        # Gender: weighted ensemble of PAR + DeepFace + MiVOLO + CLIP
+        gender, gender_confidence = _ensemble_gender(par_result, df_result, mivolo_result, clip_gender)
 
         # Precise age: prefer MiVOLO (most accurate), then DeepFace
         precise_age = None

@@ -114,22 +114,34 @@ async def analyze_person(
             if resp.status_code == 200:
                 faces = resp.json()
                 if faces:
-                    # Pick the face closest to center of image (the actual target person,
-                    # not a neighbor captured by crop padding)
+                    # Only accept faces within the CENTER region of the image.
+                    # The crop has ~20% padding above and ~5-10% sides, so reject
+                    # faces in the outer padding zone (they belong to neighbors).
                     try:
                         img_for_size = Image.open(io.BytesIO(face_image_for_detect))
-                        cx, cy = img_for_size.width / 2, img_for_size.height / 2
+                        iw, ih = img_for_size.width, img_for_size.height
+                        # Define the "real person" zone: center 70% width, skip top 15%
+                        margin_x = iw * 0.15
+                        margin_top = ih * 0.05  # small top margin (hat pad is above person)
+                        margin_bot = ih * 0.05
 
-                        def face_center_dist(f):
+                        valid_faces = []
+                        for f in faces:
                             fb = f.get("face_bbox", {})
-                            fx = fb.get("x", 0) + fb.get("w", 0) / 2
-                            fy = fb.get("y", 0) + fb.get("h", 0) / 2
-                            return (fx - cx) ** 2 + (fy - cy) ** 2
+                            fcx = fb.get("x", 0) + fb.get("w", 0) / 2
+                            fcy = fb.get("y", 0) + fb.get("h", 0) / 2
+                            # Face center must be within the center zone
+                            if margin_x < fcx < (iw - margin_x) and margin_top < fcy < (ih - margin_bot):
+                                valid_faces.append(f)
 
-                        faces.sort(key=face_center_dist)
+                        if valid_faces:
+                            # Pick the largest face in the valid zone (most likely the subject)
+                            valid_faces.sort(key=lambda f: f.get("face_bbox", {}).get("w", 0) * f.get("face_bbox", {}).get("h", 0), reverse=True)
+                            results["face"] = valid_faces[0]
+                        else:
+                            logger.info("All detected faces are in padding zone — skipping")
                     except Exception:
-                        pass
-                    results["face"] = faces[0]
+                        results["face"] = faces[0]
         except Exception as e:
             logger.warning("Face detection failed: %s", e)
 

@@ -95,7 +95,7 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
 
   const videoUrl = `${API_URL}/api/video/file/${camera.id}`;
 
-  // Capture current frame as blob
+  // Capture current frame as blob — downscale to 640px wide for faster upload
   const captureFrame = useCallback((): Promise<Blob | null> => {
     return new Promise((resolve) => {
       const video = videoRef.current;
@@ -106,10 +106,12 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
       }
       const ctx = canvas.getContext("2d");
       if (!ctx) { resolve(null); return; }
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      ctx.drawImage(video, 0, 0);
-      canvas.toBlob((blob) => resolve(blob), "image/jpeg", 0.75);
+      // Downscale to 640px wide for faster upload through tunnel
+      const scale = Math.min(1, 640 / video.videoWidth);
+      canvas.width = Math.round(video.videoWidth * scale);
+      canvas.height = Math.round(video.videoHeight * scale);
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      canvas.toBlob((blob) => resolve(blob), "image/jpeg", 0.5);
     });
   }, []);
 
@@ -129,6 +131,20 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
       });
       if (resp.ok) {
         const dets: Detection[] = await resp.json();
+        // Scale detection boxes back to full video resolution
+        // (we sent a downscaled frame for speed)
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
+        if (video && canvas && canvas.width > 0) {
+          const sx = video.videoWidth / canvas.width;
+          const sy = video.videoHeight / canvas.height;
+          for (const d of dets) {
+            d.bbox.x *= sx;
+            d.bbox.y *= sy;
+            d.bbox.w *= sx;
+            d.bbox.h *= sy;
+          }
+        }
         setDetections(dets);
         setError(null);
       } else {
@@ -147,8 +163,7 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
     async function loop() {
       while (active) {
         await runDetection();
-        // Wait 1 second between detection requests (actual detection takes ~3s)
-        await new Promise(r => setTimeout(r, 1000));
+        // No artificial delay — poll as fast as the round trip allows
       }
     }
     loop();
