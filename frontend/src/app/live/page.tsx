@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Grid2x2, Grid3x3, LayoutGrid, Play, Square } from "lucide-react";
+import { Grid2x2, Grid3x3, LayoutGrid, Play, Square, HardDrive } from "lucide-react";
 
 import { PageHeader } from "@/components/page-header";
 import { CameraFeedCard } from "@/components/camera-feed-card";
@@ -19,6 +19,15 @@ import {
 import { PageSkeleton } from "@/components/page-skeleton";
 import type { Alert, Camera, Detection } from "@/lib/types";
 import type { FrameData } from "@/lib/api";
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+
+interface NvrFile {
+  filename: string;
+  camera_id: string;
+  camera_name: string;
+  size_mb: number;
+}
 
 // ---------------------------------------------------------------------------
 // Grid config
@@ -39,12 +48,30 @@ type GridLayout = keyof typeof GRID_CONFIG;
 export default function LiveViewPage() {
   const [gridLayout, setGridLayout] = useState<GridLayout>("2x2");
   const [fullscreenCamera, setFullscreenCamera] = useState<Camera | null>(null);
+  const [fullscreenVideoUrl, setFullscreenVideoUrl] = useState<string | undefined>(undefined);
   const [cameras, setCameras] = useState<Camera[]>([]);
   const [frameData, setFrameData] = useState<Record<string, FrameData>>({});
   const [pipelineRunning, setPipelineRunning] = useState(false);
   const [pipelineLoading, setPipelineLoading] = useState(false);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [loading, setLoading] = useState(true);
+  const [nvrFiles, setNvrFiles] = useState<NvrFile[]>([]);
+
+  // Load NVR recordings list
+  useEffect(() => {
+    async function loadNvr() {
+      try {
+        const resp = await fetch(`${API_URL}/api/video/nvr/list`);
+        if (resp.ok) {
+          const data = await resp.json();
+          setNvrFiles(data.files ?? []);
+        }
+      } catch {
+        // NVR list unavailable
+      }
+    }
+    loadNvr();
+  }, []);
 
   // Load cameras from API
   useEffect(() => {
@@ -212,7 +239,7 @@ export default function LiveViewPage() {
                 <CameraFeedCard
                   camera={camera}
                   detections={detections.length > 0 ? detections : undefined}
-                  onClick={(cam) => setFullscreenCamera(cam)}
+                  onClick={(cam) => { setFullscreenVideoUrl(undefined); setFullscreenCamera(cam); }}
                 />
                 {/* Active indicator overlay */}
                 {active && (
@@ -227,6 +254,85 @@ export default function LiveViewPage() {
             );
           })}
         </div>
+        {/* ============================================================== */}
+        {/* NVR RECORDINGS — raw camera feeds below the analysis grid      */}
+        {/* ============================================================== */}
+        {nvrFiles.length > 0 && !fullscreenCamera && (
+          <div className="space-y-3 pt-2">
+            <div className="flex items-center gap-2">
+              <HardDrive className="size-4 text-[#ff8800]" />
+              <h2 className="font-heading text-sm uppercase tracking-wider text-[#ff8800]">
+                NVR RECORDINGS
+              </h2>
+              <span className="font-data text-[10px] text-[#4a6a8a]">
+                {nvrFiles.length} clips
+              </span>
+            </div>
+
+            <div className="grid gap-1.5 grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+              {nvrFiles.map((nvr) => (
+                <div
+                  key={nvr.filename}
+                  onClick={() => {
+                    const pseudoCamera: Camera = {
+                      id: nvr.camera_id,
+                      name: nvr.camera_name,
+                      location_lat: 0,
+                      location_lng: 0,
+                      zone_id: `NVR / ${nvr.filename}`,
+                      stream_url: "",
+                      status: "online",
+                      analytics_profile: null,
+                      created_at: "",
+                      updated_at: "",
+                    };
+                    setFullscreenVideoUrl(`${API_URL}/api/video/nvr/file/${nvr.filename}`);
+                    setFullscreenCamera(pseudoCamera);
+                  }}
+                  className="group relative w-full overflow-hidden rounded-sm bg-gradient-to-br from-[#0a1525] to-[#060d1a] border border-[#ff8800]/10 transition-all duration-200 hover:border-[#ff8800]/40 hover:shadow-[0_0_20px_#ff880015] cursor-pointer"
+                >
+                  <div className="relative aspect-video w-full overflow-hidden">
+                    <div className="grid-lines pointer-events-none absolute inset-0 z-20 opacity-30" />
+                    <video
+                      src={`${API_URL}/api/video/nvr/file/${nvr.filename}`}
+                      crossOrigin="anonymous"
+                      autoPlay
+                      loop
+                      muted
+                      playsInline
+                      preload="none"
+                      className="absolute inset-0 w-full h-full object-cover"
+                    />
+                    {/* Camera name */}
+                    <div className="absolute left-2 top-2 z-30">
+                      <span className="font-data text-xs text-[#ff8800]/80 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
+                        {nvr.camera_name}
+                      </span>
+                    </div>
+                    {/* NVR badge */}
+                    <div className="absolute right-2 top-2 z-30">
+                      <span className="inline-flex items-center gap-1 rounded-sm bg-[#ff8800]/10 px-1.5 py-0.5 font-data text-[9px] text-[#ff8800] backdrop-blur-sm">
+                        <HardDrive className="size-2.5" />
+                        NVR
+                      </span>
+                    </div>
+                    {/* Filename + size */}
+                    <div className="absolute bottom-2 left-2 z-30">
+                      <span className="font-data text-[10px] text-[#4a6a8a] drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
+                        {nvr.filename}
+                      </span>
+                    </div>
+                    <div className="absolute bottom-2 right-2 z-30">
+                      <span className="font-data text-[10px] text-[#4a6a8a]">
+                        {nvr.size_mb}MB
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </motion.div>
 
       {/* ================================================================== */}
@@ -236,7 +342,8 @@ export default function LiveViewPage() {
         {fullscreenCamera && (
           <InteractiveCameraViewer
             camera={fullscreenCamera}
-            onClose={() => setFullscreenCamera(null)}
+            onClose={() => { setFullscreenCamera(null); setFullscreenVideoUrl(undefined); }}
+            videoUrlOverride={fullscreenVideoUrl}
           />
         )}
       </AnimatePresence>

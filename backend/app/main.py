@@ -9,7 +9,7 @@ from app.core.config import settings
 from app.core.database import async_session_factory, engine
 from app.core.redis import close_redis, init_redis, redis_client
 from app.models.base import Base
-from app.routers import alerts, analytics, cameras, events, frames, pipeline, search, video_serve, video_stream, ws
+from app.routers import alerts, analytics, cameras, events, frames, nvr_serve, pipeline, search, video_serve, video_stream, ws
 from app.services.ai_client import ai_client
 from app.services.video_pipeline import VideoPipeline
 
@@ -103,6 +103,7 @@ app.include_router(events.router, prefix="/api")
 app.include_router(pipeline.router, prefix="/api")
 app.include_router(frames.router, prefix="/api")
 app.include_router(video_serve.router, prefix="/api")
+app.include_router(nvr_serve.router, prefix="/api")
 app.include_router(ws.router)
 app.include_router(video_stream.router)
 
