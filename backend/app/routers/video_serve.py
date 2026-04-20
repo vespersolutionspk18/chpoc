@@ -77,7 +77,9 @@ async def analyze_person(
         "type": "person",
         "person_image_b64": None,
         "face": None,
-        "face_image_b64": None,
+        "face_image_b64": None,           # original quality face crop
+        "face_image_enhanced_b64": None,   # enhanced/upscaled face crop
+        "description": "",
         "attributes": {},
     }
 
@@ -147,7 +149,7 @@ async def analyze_person(
         except Exception as e:
             logger.warning("Face detection failed: %s", e)
 
-        # 3. Crop face from UPSCALED image for high-res display
+        # 3. Crop face — BOTH original and enhanced versions
         if results["face"] and upscaled_person_bytes:
             try:
                 face_bbox = results["face"].get("face_bbox", {})
@@ -165,28 +167,21 @@ async def analyze_person(
 
                     if ifw > 0 and ifh > 0:
                         face_crop = upscaled_img.crop((ifx, ify, ifx + ifw, ify + ifh))
+
+                        # ORIGINAL: the crop from the 4x Lanczos person image (as-is)
                         buf = io.BytesIO()
                         face_crop.save(buf, format="JPEG", quality=90)
                         results["face_image_b64"] = base64.b64encode(buf.getvalue()).decode("ascii")
+
+                        # ENHANCED: further 4x Lanczos upscale on the face crop (16x total)
+                        ew = face_crop.width * 4
+                        eh = face_crop.height * 4
+                        enhanced = face_crop.resize((ew, eh), Image.LANCZOS)
+                        buf2 = io.BytesIO()
+                        enhanced.save(buf2, format="JPEG", quality=90)
+                        results["face_image_enhanced_b64"] = base64.b64encode(buf2.getvalue()).decode("ascii")
             except Exception as e:
                 logger.warning("Face crop from upscaled failed: %s", e)
-
-        # Fallback: crop face from raw image if upscaled crop failed
-        if results["face"] and not results["face_image_b64"]:
-            try:
-                face_bbox = results["face"].get("face_bbox", {})
-                fx = int(face_bbox.get("x", 0))
-                fy = int(face_bbox.get("y", 0))
-                fw = int(face_bbox.get("w", 0))
-                fh = int(face_bbox.get("h", 0))
-                if fw > 0 and fh > 0:
-                    pil_img = Image.open(io.BytesIO(contents))
-                    face_crop = pil_img.crop((fx, fy, fx + fw, fy + fh))
-                    buf = io.BytesIO()
-                    face_crop.save(buf, format="JPEG", quality=85)
-                    results["face_image_b64"] = base64.b64encode(buf.getvalue()).decode("ascii")
-            except Exception as e:
-                logger.warning("Face crop fallback failed: %s", e)
 
     # Fallback: use raw image if no upscaled available
     if not results["person_image_b64"]:

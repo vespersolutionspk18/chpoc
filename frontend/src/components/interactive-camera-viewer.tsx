@@ -26,6 +26,7 @@ interface AnalysisResult {
     embedding: number[] | null;
   } | null;
   face_image_b64?: string | null;
+  face_image_enhanced_b64?: string | null;
   vehicle_image_b64?: string;
   plate?: {
     plate_text: string;
@@ -485,15 +486,32 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
                     </div>
                   )}
 
-                  {/* Face section (person only) */}
-                  {isPerson && analysis.face_image_b64 && (
-                    <div className="space-y-1">
-                      <span className="font-heading text-[7px] uppercase tracking-[0.2em] text-[#4a6a8a]">FACE CROP</span>
-                      <img
-                        src={`data:image/jpeg;base64,${analysis.face_image_b64}`}
-                        alt="Face crop"
-                        className="w-full rounded-sm border border-[#00ff88]/20 object-contain max-h-32"
-                      />
+                  {/* Face section — BOTH original and enhanced (person only) */}
+                  {isPerson && (analysis.face_image_b64 || analysis.face_image_enhanced_b64) && (
+                    <div className="space-y-2">
+                      <span className="font-heading text-[7px] uppercase tracking-[0.2em] text-[#4a6a8a]">FACE CROP — CLICK TO SELECT FOR ANALYSIS</span>
+                      <div className="grid grid-cols-2 gap-2">
+                        {analysis.face_image_b64 && (
+                          <div className="space-y-1 cursor-pointer group" onClick={() => console.log("Use original face for search")}>
+                            <span className="font-heading text-[7px] uppercase tracking-[0.15em] text-[#4a6a8a] group-hover:text-[#00f0ff]">ORIGINAL</span>
+                            <img
+                              src={`data:image/jpeg;base64,${analysis.face_image_b64}`}
+                              alt="Face original"
+                              className="w-full rounded-sm border border-white/10 object-contain max-h-28 group-hover:border-[#00f0ff]/50 transition-colors"
+                            />
+                          </div>
+                        )}
+                        {analysis.face_image_enhanced_b64 && (
+                          <div className="space-y-1 cursor-pointer group" onClick={() => console.log("Use enhanced face for search")}>
+                            <span className="font-heading text-[7px] uppercase tracking-[0.15em] text-[#4a6a8a] group-hover:text-[#00ff88]">ENHANCED</span>
+                            <img
+                              src={`data:image/jpeg;base64,${analysis.face_image_enhanced_b64}`}
+                              alt="Face enhanced"
+                              className="w-full rounded-sm border border-white/10 object-contain max-h-28 group-hover:border-[#00ff88]/50 transition-colors"
+                            />
+                          </div>
+                        )}
+                      </div>
                     </div>
                   )}
 
