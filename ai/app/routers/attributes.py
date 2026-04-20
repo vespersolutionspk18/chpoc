@@ -671,28 +671,28 @@ async def extract_person_attributes(image: UploadFile = File(...)):
         # 4) MiVOLO for precise age + gender
         mivolo_result = _run_mivolo(upscaled_rgb)
 
-        # 5) CLIP for clothing style + face covered detection
+        # 5) CLIP for ALL contextual attributes (batched — one model, multiple queries)
+        # CLIP understands South Asian clothing context that PAR cannot
+
+        # Clothing style
         try:
             style_probs = _classify_zero_shot(pil_img, _STYLE_PROMPTS)
             clothing_style, _ = _pick_best(_STYLE_LABELS, style_probs)
         except Exception:
             clothing_style = "unknown"
 
-        # CLIP hat verification (PAR misses Pakistani topis/prayer caps)
+        # Hat — specifically rigid headwear, NOT dupattas/chaddars/scarves
         try:
             hat_probs = _classify_zero_shot(pil_img, [
-                "person wearing a hat or cap or topi or turban or head covering",
-                "person with bare head and no hat",
+                "person wearing a rigid hat or cap or topi or helmet or turban on their head",
+                "person without any hat or cap on their head",
             ])
             clip_hat = bool(hat_probs[0] > hat_probs[1])
-            # Override PAR if CLIP detects a hat
-            if clip_hat and not par_result.get("hat", False):
-                par_result["hat"] = True
-                logger.info("CLIP overrode PAR: hat detected")
+            par_result["hat"] = clip_hat  # CLIP overrides PAR completely for hats
         except Exception:
             pass
 
-        # Face covered: mask, scarf, niqab, veil
+        # Face covered
         try:
             fc_probs = _classify_zero_shot(pil_img, [
                 "person with face covered by mask or scarf or veil or niqab",
@@ -702,7 +702,7 @@ async def extract_person_attributes(image: UploadFile = File(...)):
         except Exception:
             face_covered = False
 
-        # CLIP gender (strongest signal for South Asian clothing context)
+        # Gender
         clip_gender = None
         try:
             gp = _classify_zero_shot(pil_img, [
@@ -713,9 +713,45 @@ async def extract_person_attributes(image: UploadFile = File(...)):
                 "gender": "male" if gp[0] > gp[1] else "female",
                 "confidence": round(float(max(gp)), 4),
             }
-            logger.info("CLIP gender: %s (%.0f%%)", clip_gender["gender"], clip_gender["confidence"] * 100)
         except Exception:
             pass
+
+        # CLIP clothing override — PAR is trained on Western clothing only
+        # Replace PAR's "long sleeve / trousers / western" with actual descriptions
+        try:
+            # Upper clothing type
+            upper_probs = _classify_zero_shot(pil_img, [
+                "person wearing a shirt", "person wearing a kurta or kameez",
+                "person wearing a jacket or coat", "person wearing a t-shirt",
+                "person wearing a sweater", "person wearing an abaya or burqa",
+            ])
+            upper_labels = ["shirt", "kurta/kameez", "jacket", "t-shirt", "sweater", "abaya/burqa"]
+            par_result["upper_clothing"] = upper_labels[int(np.argmax(upper_probs))]
+
+            # Upper color — CLIP
+            uc_probs = _classify_zero_shot(pil_img, [f"person wearing {c} on top" for c in _COLORS])
+            par_result["upper_color"] = _COLORS[int(np.argmax(uc_probs))]
+
+            # Lower clothing type
+            lower_probs = _classify_zero_shot(pil_img, [
+                "person wearing trousers or pants", "person wearing shalwar",
+                "person wearing jeans", "person wearing a skirt or dress",
+                "person wearing shorts", "person wearing a long robe or gown",
+            ])
+            lower_labels = ["trousers", "shalwar", "jeans", "skirt/dress", "shorts", "robe/gown"]
+            par_result["lower_clothing"] = lower_labels[int(np.argmax(lower_probs))]
+
+            # Lower color — CLIP
+            lc_probs = _classify_zero_shot(pil_img, [f"person wearing {c} on bottom" for c in _COLORS])
+            par_result["lower_color"] = _COLORS[int(np.argmax(lc_probs))]
+
+            # Sleeve length — CLIP
+            sl_probs = _classify_zero_shot(pil_img, [
+                "person wearing short sleeves", "person wearing long sleeves",
+            ])
+            par_result["sleeve_length"] = "short" if sl_probs[0] > sl_probs[1] else "long"
+        except Exception as e:
+            logger.warning("CLIP clothing override failed: %s", e)
 
         # --- Merge results with GENDER ENSEMBLE ---
 
