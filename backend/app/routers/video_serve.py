@@ -6,8 +6,7 @@ import logging
 import httpx
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Form, UploadFile, File
-from fastapi.responses import FileResponse, Response
-from starlette.responses import StreamingResponse as StarletteStreamingResponse
+from fastapi.responses import FileResponse
 from PIL import Image
 
 from app.core.config import settings
@@ -71,22 +70,21 @@ async def detect_frame(
 async def analyze_person(
     image: UploadFile = File(...),
 ):
-    """Full person analysis: face detection, embedding, attributes, with images."""
+    """Full person analysis: face detection, embedding, attributes, with 8x upscaled images."""
     contents = await image.read()
-
-    # Encode full person crop as base64
-    person_image_b64 = base64.b64encode(contents).decode("ascii")
 
     results: dict = {
         "type": "person",
-        "person_image_b64": person_image_b64,
+        "person_image_b64": None,
         "face": None,
         "face_image_b64": None,
         "attributes": {},
     }
 
+    upscaled_person_bytes: bytes | None = None
+
     async with httpx.AsyncClient() as client:
-        # Face detection + embedding
+        # 1. Face detection + embedding
         try:
             resp = await client.post(
                 f"{settings.AI_SERVICE_URL}/face/detect",
@@ -97,35 +95,82 @@ async def analyze_person(
                 faces = resp.json()
                 if faces:
                     results["face"] = faces[0]
-                    # Crop the face from the person image and encode as base64
-                    try:
-                        face_bbox = faces[0].get("face_bbox", {})
-                        fx = int(face_bbox.get("x", 0))
-                        fy = int(face_bbox.get("y", 0))
-                        fw = int(face_bbox.get("w", 0))
-                        fh = int(face_bbox.get("h", 0))
-                        if fw > 0 and fh > 0:
-                            pil_img = Image.open(io.BytesIO(contents))
-                            face_crop = pil_img.crop((fx, fy, fx + fw, fy + fh))
-                            buf = io.BytesIO()
-                            face_crop.save(buf, format="JPEG", quality=85)
-                            results["face_image_b64"] = base64.b64encode(buf.getvalue()).decode("ascii")
-                    except Exception as crop_err:
-                        logger.warning("Face crop failed: %s", crop_err)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Face detection failed: %s", e)
 
-        # Person attributes
+        # 2. Person attributes (AI service does 8x upscale internally)
         try:
             resp = await client.post(
                 f"{settings.AI_SERVICE_URL}/attributes/person",
                 files={"image": ("crop.jpg", contents, "image/jpeg")},
-                timeout=30.0,
+                timeout=60.0,
             )
             if resp.status_code == 200:
-                results["attributes"] = resp.json()
-        except Exception:
-            pass
+                attrs = resp.json()
+                # Extract the 8x upscaled image from AI response
+                upscaled_b64 = attrs.pop("upscaled_image_b64", None)
+                if upscaled_b64:
+                    results["person_image_b64"] = upscaled_b64
+                    upscaled_person_bytes = base64.b64decode(upscaled_b64)
+                results["attributes"] = attrs
+        except Exception as e:
+            logger.warning("Person attributes failed: %s", e)
+
+        # 3. Crop face from UPSCALED image (not raw) for high-res display
+        if results["face"] and upscaled_person_bytes:
+            try:
+                face_bbox = results["face"].get("face_bbox", {})
+                fx = float(face_bbox.get("x", 0))
+                fy = float(face_bbox.get("y", 0))
+                fw = float(face_bbox.get("w", 0))
+                fh = float(face_bbox.get("h", 0))
+                if fw > 0 and fh > 0:
+                    raw_img = Image.open(io.BytesIO(contents))
+                    upscaled_img = Image.open(io.BytesIO(upscaled_person_bytes))
+
+                    # Face bbox is relative to raw image — scale to upscaled dims
+                    scale_x = upscaled_img.width / raw_img.width
+                    scale_y = upscaled_img.height / raw_img.height
+
+                    ufx = int(fx * scale_x)
+                    ufy = int(fy * scale_y)
+                    ufw = int(fw * scale_x)
+                    ufh = int(fh * scale_y)
+
+                    # Clamp to image bounds
+                    ufx = max(0, ufx)
+                    ufy = max(0, ufy)
+                    ufw = min(ufw, upscaled_img.width - ufx)
+                    ufh = min(ufh, upscaled_img.height - ufy)
+
+                    if ufw > 0 and ufh > 0:
+                        face_crop = upscaled_img.crop((ufx, ufy, ufx + ufw, ufy + ufh))
+                        buf = io.BytesIO()
+                        face_crop.save(buf, format="JPEG", quality=90)
+                        results["face_image_b64"] = base64.b64encode(buf.getvalue()).decode("ascii")
+            except Exception as e:
+                logger.warning("Face crop from upscaled failed: %s", e)
+
+        # Fallback: crop face from raw image if upscaled crop failed
+        if results["face"] and not results["face_image_b64"]:
+            try:
+                face_bbox = results["face"].get("face_bbox", {})
+                fx = int(face_bbox.get("x", 0))
+                fy = int(face_bbox.get("y", 0))
+                fw = int(face_bbox.get("w", 0))
+                fh = int(face_bbox.get("h", 0))
+                if fw > 0 and fh > 0:
+                    pil_img = Image.open(io.BytesIO(contents))
+                    face_crop = pil_img.crop((fx, fy, fx + fw, fy + fh))
+                    buf = io.BytesIO()
+                    face_crop.save(buf, format="JPEG", quality=85)
+                    results["face_image_b64"] = base64.b64encode(buf.getvalue()).decode("ascii")
+            except Exception as e:
+                logger.warning("Face crop fallback failed: %s", e)
+
+    # Fallback: use raw image if no upscaled available
+    if not results["person_image_b64"]:
+        results["person_image_b64"] = base64.b64encode(contents).decode("ascii")
 
     return results
 
@@ -134,62 +179,51 @@ async def analyze_person(
 async def analyze_vehicle(
     image: UploadFile = File(...),
 ):
-    """Full vehicle analysis: plate OCR, attributes, with images."""
+    """Full vehicle analysis: plate OCR, attributes, with 8x upscaled images."""
     contents = await image.read()
-
-    # Encode full vehicle crop as base64
-    vehicle_image_b64 = base64.b64encode(contents).decode("ascii")
 
     results: dict = {
         "type": "vehicle",
-        "vehicle_image_b64": vehicle_image_b64,
+        "vehicle_image_b64": None,
         "plate": None,
         "attributes": {},
     }
 
     async with httpx.AsyncClient() as client:
-        # Plate OCR
+        # 1. Plate OCR — AI service returns upscaled plate_image_b64
         try:
             resp = await client.post(
                 f"{settings.AI_SERVICE_URL}/plate/read",
                 files={"image": ("crop.jpg", contents, "image/jpeg")},
-                timeout=15.0,
+                timeout=30.0,
             )
             if resp.status_code == 200:
                 plate_data = resp.json()
-                # If plate was detected, crop and encode the plate region as base64
-                plate_image_b64 = None
-                if plate_data.get("plate_text"):
-                    try:
-                        pbbox = plate_data.get("plate_bbox", {})
-                        px = int(pbbox.get("x", 0))
-                        py = int(pbbox.get("y", 0))
-                        pw = int(pbbox.get("w", 0))
-                        ph = int(pbbox.get("h", 0))
-                        if pw > 0 and ph > 0:
-                            pil_img = Image.open(io.BytesIO(contents))
-                            plate_crop = pil_img.crop((px, py, px + pw, py + ph))
-                            buf = io.BytesIO()
-                            plate_crop.save(buf, format="JPEG", quality=90)
-                            plate_image_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-                    except Exception as crop_err:
-                        logger.warning("Plate crop failed: %s", crop_err)
-
-                plate_data["plate_image_b64"] = plate_image_b64
+                # plate_data already has plate_image_b64 (upscaled) from AI service
+                # DO NOT overwrite with a raw crop!
                 results["plate"] = plate_data
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Plate read failed: %s", e)
 
-        # Vehicle attributes
+        # 2. Vehicle attributes (AI service does 8x upscale internally)
         try:
             resp = await client.post(
                 f"{settings.AI_SERVICE_URL}/attributes/vehicle",
                 files={"image": ("crop.jpg", contents, "image/jpeg")},
-                timeout=30.0,
+                timeout=60.0,
             )
             if resp.status_code == 200:
-                results["attributes"] = resp.json()
-        except Exception:
-            pass
+                attrs = resp.json()
+                # Extract the 8x upscaled image from AI response
+                upscaled_b64 = attrs.pop("upscaled_image_b64", None)
+                if upscaled_b64:
+                    results["vehicle_image_b64"] = upscaled_b64
+                results["attributes"] = attrs
+        except Exception as e:
+            logger.warning("Vehicle attributes failed: %s", e)
+
+    # Fallback: use raw image if no upscaled available
+    if not results["vehicle_image_b64"]:
+        results["vehicle_image_b64"] = base64.b64encode(contents).decode("ascii")
 
     return results

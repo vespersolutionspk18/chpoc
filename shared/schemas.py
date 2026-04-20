@@ -38,6 +38,7 @@ class PlateOCRResult(BaseModel):
     plate_text: str
     confidence: float
     plate_bbox: BoundingBox
+    plate_image_b64: str | None = None
 
 
 class PoseKeypoints(BaseModel):
@@ -46,19 +47,38 @@ class PoseKeypoints(BaseModel):
 
 
 class PersonAttributes(BaseModel):
+    gender: str | None = None
+    gender_confidence: float | None = None
+    age_group: str | None = None
+    precise_age: int | None = None
+    emotion: str | None = None
+    ethnicity: str | None = None
+    hair: str | None = None
+    upper_clothing: str | None = None
+    upper_color: str | None = None
+    lower_clothing: str | None = None
+    lower_color: str | None = None
+    sleeve_length: str | None = None
+    clothing_style: str | None = None
     hat: bool | None = None
     glasses: bool | None = None
-    mask: bool | None = None
-    upper_color: str | None = None
-    lower_color: str | None = None
     bag: bool | None = None
     backpack: bool | None = None
+    upscaled_image_b64: str | None = None
 
 
 class VehicleAttributes(BaseModel):
+    make_model: str | None = None
+    make_model_confidence: float | None = None
     color: str | None = None
+    color_confidence: float | None = None
     vehicle_type: str | None = None
-    brand: str | None = None
+    vehicle_type_confidence: float | None = None
+    direction: str | None = None
+    condition: str | None = None
+    damage_visible: bool | None = None
+    vehicle_class: str | None = None
+    upscaled_image_b64: str | None = None
 
 
 class ActionClassification(BaseModel):
