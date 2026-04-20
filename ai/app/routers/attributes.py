@@ -1,21 +1,17 @@
 """
-attributes.py – Person & Vehicle attribute extraction using 5 dedicated models
-with CLIP as fallback for attributes that lack a dedicated model.
+attributes.py – Person & Vehicle attribute extraction using real AI models.
 
-Models:
-  1. dsabarinathan/attribute-recognition (ResNet-30 PAR) – 40 person attributes
-  2. DeepFace – face-level age, gender, emotion, ethnicity
-  3. MiVOLO v2 – precise age + gender from person/face crop
-  4. dima806/car_models_image_detection (HuggingFace) – vehicle make+model (396 classes)
-  5. Intel vehicle-attributes-recognition-barrier-0042 – vehicle color + type
+Person: PAR + DeepFace + MiVOLO + CLIP (gender ensemble)
+Vehicle: Qwen2-VL-2B VLM for make/model/color/type (replaces inaccurate narrow classifiers)
 
-All model loads are lazy (first use). If any model fails, we fall back to CLIP
-or skip gracefully. The endpoint NEVER crashes.
+All model loads are lazy (first use). If any model fails, we fall back gracefully.
 """
 from __future__ import annotations
 
 import base64
+import json
 import logging
+import re
 import time
 import traceback
 
@@ -45,8 +41,8 @@ _par_model = None           # dsabarinathan ResNet-30
 _mivolo_model = None        # MiVOLO v2
 _mivolo_processor = None
 _deepface_ok: bool | None = None  # None = not tried yet
-_car_classifier = None      # HuggingFace dima806 pipeline
-_intel_vehicle_model = None  # OpenVINO compiled model
+_vlm_model = None           # Qwen2-VL-2B for vehicle analysis
+_vlm_processor = None
 
 # PAR label columns (40 attributes from dsabarinathan model)
 _PAR_LABELS = [
@@ -186,47 +182,45 @@ def _check_deepface():
     return _deepface_ok
 
 
-def _get_car_classifier():
-    """Load dima806/car_models_image_detection HuggingFace pipeline."""
-    global _car_classifier
-    if _car_classifier is None:
+def _get_vlm():
+    """Load Qwen2-VL-2B-Instruct for vehicle attribute extraction."""
+    global _vlm_model, _vlm_processor
+    if _vlm_model is None:
         try:
-            from transformers import pipeline
-            _car_classifier = pipeline(
-                "image-classification",
-                model="dima806/car_models_image_detection",
-                device=0 if _device == "cuda" else -1,
+            from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+            _vlm_model = Qwen2VLForConditionalGeneration.from_pretrained(
+                "Qwen/Qwen2-VL-2B-Instruct",
+                torch_dtype=torch.float16,
+                device_map="auto",
             )
-            logger.info("dima806 car model classifier loaded")
+            _vlm_processor = AutoProcessor.from_pretrained("Qwen/Qwen2-VL-2B-Instruct")
+            logger.info("Qwen2-VL-2B-Instruct loaded for vehicle analysis")
         except Exception as e:
-            logger.warning("Failed to load car classifier: %s", e)
-            _car_classifier = "FAILED"
-    return _car_classifier if _car_classifier != "FAILED" else None
-
-
-def _get_intel_vehicle_model():
-    """Load Intel vehicle-attributes-recognition-barrier-0042 via OpenVINO."""
-    global _intel_vehicle_model
-    if _intel_vehicle_model is None:
-        try:
-            from openvino.runtime import Core
-            ie = Core()
-            model = ie.read_model(
-                "/models/intel/vehicle-attrs/intel/"
-                "vehicle-attributes-recognition-barrier-0042/FP32/"
-                "vehicle-attributes-recognition-barrier-0042.xml"
-            )
-            _intel_vehicle_model = ie.compile_model(model, "CPU")
-            logger.info("Intel vehicle-attributes-recognition-barrier-0042 loaded")
-        except Exception as e:
-            logger.warning("Failed to load Intel vehicle model: %s", e)
-            _intel_vehicle_model = "FAILED"
-    return _intel_vehicle_model if _intel_vehicle_model != "FAILED" else None
+            logger.warning("Qwen2-VL-2B failed: %s — will fall back to CLIP", e)
+            _vlm_model = "FAILED"
+    return (_vlm_model, _vlm_processor) if _vlm_model != "FAILED" else (None, None)
 
 
 # ============================================================================
 # Helpers
 # ============================================================================
+
+def _sanitize(obj):
+    """Convert numpy types to Python native types for JSON serialization."""
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_sanitize(v) for v in obj)
+    if isinstance(obj, (np.floating, np.float16, np.float32, np.float64)):
+        return float(obj)
+    if isinstance(obj, (np.integer, np.int8, np.int16, np.int32, np.int64)):
+        return int(obj)
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return obj
+
 
 def _upscale_and_encode(cv2_bgr: np.ndarray) -> tuple[np.ndarray, str]:
     """Upscale a BGR image 8x with Real-ESRGAN and return (upscaled_bgr, base64_jpeg)."""
@@ -463,60 +457,79 @@ def _run_mivolo(rgb_np: np.ndarray) -> dict | None:
         return None
 
 
-def _run_car_classifier(pil_img: Image.Image) -> dict | None:
-    """Run dima806 car model classifier."""
-    clf = _get_car_classifier()
-    if clf is None:
+def _run_vlm_vehicle(pil_img: Image.Image) -> dict | None:
+    """Run Qwen2-VL-2B to identify vehicle make, model, color, type."""
+    model, processor = _get_vlm()
+    if model is None:
         return None
     try:
-        results = clf(pil_img, top_k=1)
-        if results and len(results) > 0:
-            top = results[0]
-            label = top["label"].replace("_", " ").title()
+        prompt_text = (
+            "Identify this vehicle precisely. Respond ONLY in JSON format:\n"
+            '{"make":"...","model":"...","color":"...","type":"...","condition":"...","damage":"no/yes"}\n'
+            "For type use: sedan, SUV, hatchback, truck, van, bus, motorcycle, rickshaw, chingchi, pickup, wagon.\n"
+            "For Pakistani vehicles: Suzuki Mehran/Alto/Cultus/Bolan/WagonR, Toyota Corolla/Vitz/Yaris, Honda City/Civic.\n"
+            "Be precise about the color you see."
+        )
+
+        messages = [{"role": "user", "content": [
+            {"type": "image", "image": pil_img},
+            {"type": "text", "text": prompt_text},
+        ]}]
+
+        text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = processor(text=[text], images=[pil_img], return_tensors="pt").to(model.device)
+
+        with torch.no_grad():
+            output = model.generate(**inputs, max_new_tokens=200, do_sample=False)
+
+        decoded = processor.batch_decode(output[:, inputs["input_ids"].shape[1]:],
+                                         skip_special_tokens=True)[0].strip()
+        logger.info("VLM raw output: %s", decoded)
+
+        # Parse JSON from response (handle markdown fences)
+        json_match = re.search(r'\{[^}]+\}', decoded)
+        if json_match:
+            data = json.loads(json_match.group())
             return {
-                "make_model": label,
-                "make_model_confidence": round(float(top["score"]), 4),
+                "make_model": f"{data.get('make', 'unknown')} {data.get('model', '')}".strip(),
+                "make_model_confidence": 0.85,
+                "color": data.get("color", "unknown").lower(),
+                "color_confidence": 0.85,
+                "vehicle_type": data.get("type", "unknown").lower(),
+                "vehicle_type_confidence": 0.85,
+                "condition": data.get("condition", "unknown").lower(),
+                "damage_visible": str(data.get("damage", "no")).lower() in ("yes", "true"),
             }
     except Exception as e:
-        logger.warning("Car classifier failed: %s", e)
+        logger.warning("VLM vehicle analysis failed: %s\n%s", e, traceback.format_exc())
     return None
 
 
-def _run_intel_vehicle(cv2_bgr: np.ndarray) -> dict | None:
-    """Run Intel vehicle-attributes model."""
-    compiled = _get_intel_vehicle_model()
-    if compiled is None:
-        return None
+def _run_clip_vehicle_fallback(pil_img: Image.Image) -> dict:
+    """CLIP fallback for vehicle attributes when VLM is unavailable."""
+    result = {}
     try:
-        resized = cv2.resize(cv2_bgr, (72, 72))
-        blob = resized.transpose(2, 0, 1).astype(np.float32)
-        blob = blob[np.newaxis, ...]
+        color_probs = _classify_zero_shot(pil_img, [f"a {c} vehicle" for c in _COLORS])
+        color, color_conf = _pick_best(_COLORS, color_probs)
+        result["color"] = color
+        result["color_confidence"] = float(color_conf)
 
-        infer_request = compiled.create_infer_request()
-        infer_request.infer({0: blob})
+        type_prompts = ["sedan car", "SUV", "truck", "van", "motorcycle",
+                        "bus", "pickup truck", "hatchback car", "three-wheeled auto-rickshaw"]
+        type_labels = ["sedan", "SUV", "truck", "van", "motorcycle",
+                       "bus", "pickup", "hatchback", "rickshaw"]
+        tp = _classify_zero_shot(pil_img, type_prompts)
+        vtype, vtype_conf = _pick_best(type_labels, tp)
+        result["vehicle_type"] = vtype
+        result["vehicle_type_confidence"] = float(vtype_conf)
 
-        color_out = infer_request.get_output_tensor(0).data[0]
-        type_out = infer_request.get_output_tensor(1).data[0]
-
-        color_idx = int(np.argmax(color_out))
-        type_idx = int(np.argmax(type_out))
-
-        def _softmax(x):
-            e = np.exp(x - np.max(x))
-            return e / e.sum()
-
-        color_probs = _softmax(color_out)
-        type_probs = _softmax(type_out)
-
-        return {
-            "color": _INTEL_COLORS[color_idx],
-            "color_confidence": round(float(color_probs[color_idx]), 4),
-            "vehicle_type": _INTEL_TYPES[type_idx],
-            "vehicle_type_confidence": round(float(type_probs[type_idx]), 4),
-        }
+        result["make_model"] = "unknown"
+        result["make_model_confidence"] = 0.0
+        result["condition"] = "unknown"
+        result["damage_visible"] = False
     except Exception as e:
-        logger.warning("Intel vehicle model failed: %s", e)
-    return None
+        logger.warning("CLIP vehicle fallback failed: %s", e)
+    return result
 
 
 def _ensemble_gender(
@@ -649,7 +662,7 @@ async def extract_person_attributes(image: UploadFile = File(...)):
         elapsed = (time.perf_counter() - t0) * 1000
         logger.info("attributes/person: %.0f ms (PAR + DeepFace + MiVOLO + CLIP)", elapsed)
 
-        return {
+        return _sanitize({
             "upscaled_image_b64": upscaled_b64,
             "gender": gender,
             "gender_confidence": gender_confidence,
@@ -668,7 +681,7 @@ async def extract_person_attributes(image: UploadFile = File(...)):
             "bag": par_result.get("bag", False),
             "sleeve_length": par_result.get("sleeve_length", "unknown"),
             "clothing_style": clothing_style,
-        }
+        })
     except Exception as e:
         logger.error("attributes/person unexpected error: %s\n%s", e, traceback.format_exc())
         return {"error": str(e)}
@@ -682,9 +695,8 @@ async def extract_vehicle_attributes(image: UploadFile = File(...)):
     """
     Extract vehicle attributes using:
       1. 8x Real-ESRGAN upscale
-      2. dima806 HuggingFace pipeline (make + model)
-      3. Intel vehicle-attributes-recognition-barrier-0042 (color + type)
-      4. CLIP fallback for direction, condition, damage, vehicle_class
+      2. Qwen2-VL-2B VLM for make, model, color, type, condition, damage
+      3. CLIP fallback if VLM unavailable
     """
     t0 = time.perf_counter()
     try:
@@ -706,49 +718,37 @@ async def extract_vehicle_attributes(image: UploadFile = File(...)):
         upscaled_rgb = cv2.cvtColor(upscaled_bgr, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(upscaled_rgb)
 
-        # 2) dima806 car model classifier
-        car_result = _run_car_classifier(pil_img)
-        make_model = car_result["make_model"] if car_result else "unknown"
-        make_model_conf = car_result["make_model_confidence"] if car_result else 0.0
+        # 2) Qwen2-VL-2B for ALL vehicle attributes in one pass
+        vlm_result = _run_vlm_vehicle(pil_img)
 
-        # 3) Intel vehicle attributes (color + type)
-        intel_result = _run_intel_vehicle(upscaled_bgr)
-
-        if intel_result:
-            color = intel_result["color"]
-            color_conf = intel_result["color_confidence"]
-            vehicle_type = intel_result["vehicle_type"]
-            vehicle_type_conf = intel_result["vehicle_type_confidence"]
+        if vlm_result:
+            make_model = vlm_result.get("make_model", "unknown")
+            make_model_conf = vlm_result.get("make_model_confidence", 0.85)
+            color = vlm_result.get("color", "unknown")
+            color_conf = vlm_result.get("color_confidence", 0.85)
+            vehicle_type = vlm_result.get("vehicle_type", "unknown")
+            vehicle_type_conf = vlm_result.get("vehicle_type_confidence", 0.85)
+            condition = vlm_result.get("condition", "unknown")
+            damage_visible = vlm_result.get("damage_visible", False)
         else:
-            logger.info("Intel vehicle model unavailable, using CLIP fallback")
-            color_probs = _classify_zero_shot(pil_img, [f"a {c} vehicle" for c in _COLORS])
-            color, color_conf = _pick_best(_COLORS, color_probs)
-            type_prompts = ["sedan", "SUV", "truck", "van", "motorcycle",
-                            "bus", "pickup", "hatchback"]
-            type_labels = ["car", "SUV", "truck", "van", "motorcycle",
-                           "bus", "pickup", "hatchback"]
-            tp = _classify_zero_shot(pil_img, type_prompts)
-            vehicle_type, vehicle_type_conf = _pick_best(type_labels, tp)
+            # CLIP fallback
+            logger.info("VLM unavailable, using CLIP fallback for vehicle")
+            fb = _run_clip_vehicle_fallback(pil_img)
+            make_model = fb.get("make_model", "unknown")
+            make_model_conf = fb.get("make_model_confidence", 0.0)
+            color = fb.get("color", "unknown")
+            color_conf = fb.get("color_confidence", 0.0)
+            vehicle_type = fb.get("vehicle_type", "unknown")
+            vehicle_type_conf = fb.get("vehicle_type_confidence", 0.0)
+            condition = fb.get("condition", "unknown")
+            damage_visible = fb.get("damage_visible", False)
 
-        # 4) CLIP for direction, condition, damage, vehicle_class
+        # Direction and vehicle class via CLIP (VLM doesn't handle these well)
         try:
             dir_probs = _classify_zero_shot(pil_img, _VEHICLE_DIRECTION_PROMPTS)
             direction, _ = _pick_best(_VEHICLE_DIRECTION_LABELS, dir_probs)
         except Exception:
             direction = "unknown"
-
-        try:
-            cond_probs = _classify_zero_shot(pil_img, _VEHICLE_CONDITION_PROMPTS)
-            condition, _ = _pick_best(_VEHICLE_CONDITION_LABELS, cond_probs)
-        except Exception:
-            condition = "unknown"
-
-        try:
-            dmg_probs = _classify_zero_shot(pil_img,
-                ["vehicle with visible damage", "vehicle without damage"])
-            damage_visible = dmg_probs[0] > dmg_probs[1]
-        except Exception:
-            damage_visible = False
 
         try:
             cls_probs = _classify_zero_shot(pil_img, _VEHICLE_CLASS_PROMPTS)
@@ -757,9 +757,9 @@ async def extract_vehicle_attributes(image: UploadFile = File(...)):
             vehicle_class = "private"
 
         elapsed = (time.perf_counter() - t0) * 1000
-        logger.info("attributes/vehicle: %.0f ms (dima806 + Intel + CLIP)", elapsed)
+        logger.info("attributes/vehicle: %.0f ms (VLM + CLIP)", elapsed)
 
-        return {
+        return _sanitize({
             "upscaled_image_b64": upscaled_b64,
             "make_model": make_model,
             "make_model_confidence": make_model_conf,
