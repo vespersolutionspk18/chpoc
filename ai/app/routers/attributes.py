@@ -222,6 +222,47 @@ def _sanitize(obj):
     return obj
 
 
+def _parse_vlm_json(raw: str) -> dict | None:
+    """Parse JSON from VLM output, handling markdown fences and truncation."""
+    # Strip markdown code fences
+    cleaned = re.sub(r'```json\s*', '', raw)
+    cleaned = re.sub(r'```\s*$', '', cleaned).strip()
+
+    # Try direct parse first
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # Try to find JSON object
+    match = re.search(r'\{.*\}', cleaned, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+
+    # Truncated JSON — try to repair by closing open braces/brackets
+    try:
+        # Find the first { and take everything after it
+        start = cleaned.find('{')
+        if start < 0:
+            return None
+        fragment = cleaned[start:]
+        # Count open/close braces and add missing ones
+        opens = fragment.count('{') - fragment.count('}')
+        open_brackets = fragment.count('[') - fragment.count(']')
+        # Remove trailing comma if present
+        fragment = fragment.rstrip().rstrip(',')
+        # Remove trailing incomplete key-value (e.g., '"key": ')
+        fragment = re.sub(r',?\s*"[^"]*":\s*$', '', fragment)
+        fragment += ']' * max(0, open_brackets) + '}' * max(0, opens)
+        return json.loads(fragment)
+    except (json.JSONDecodeError, Exception) as e:
+        logger.warning("JSON repair failed: %s", e)
+    return None
+
+
 def _upscale_and_encode(cv2_bgr: np.ndarray) -> tuple[np.ndarray, str]:
     """Upscale a BGR image 8x with Real-ESRGAN and return (upscaled_bgr, base64_jpeg)."""
     upsampler = _get_upsampler()
@@ -486,10 +527,8 @@ def _run_vlm_vehicle(pil_img: Image.Image) -> dict | None:
                                          skip_special_tokens=True)[0].strip()
         logger.info("VLM raw output: %s", decoded)
 
-        # Parse JSON from response (handle markdown fences, nested braces)
-        json_match = re.search(r'\{[^{}]*\}', decoded)
-        if json_match:
-            data = json.loads(json_match.group())
+        data = _parse_vlm_json(decoded)
+        if data:
 
             # Map confidence string to numeric
             conf_str = data.get("confidence", "medium").lower()
@@ -684,19 +723,16 @@ async def extract_person_attributes(image: UploadFile = File(...)):
                 inputs = processor(text=[text], images=[pil_img], return_tensors="pt").to(model.device)
 
                 with torch.no_grad():
-                    output = model.generate(**inputs, max_new_tokens=400, do_sample=False)
+                    output = model.generate(**inputs, max_new_tokens=600, do_sample=False)
 
                 decoded = processor.batch_decode(output[:, inputs["input_ids"].shape[1]:],
                                                  skip_special_tokens=True)[0].strip()
                 logger.info("VLM person raw: %s", decoded)
 
-                # Parse JSON — handle nested braces for the attributes dict
-                json_match = re.search(r'\{.*\}', decoded, re.DOTALL)
-                if json_match:
-                    data = json.loads(json_match.group())
+                data = _parse_vlm_json(decoded)
+                if data:
                     description = data.get("description", "")
                     attributes = data.get("attributes", data)
-                    # If the model returned flat JSON without description/attributes keys
                     if "description" not in data and "gender" in data:
                         description = ""
                         attributes = data
@@ -784,15 +820,14 @@ async def extract_vehicle_attributes(image: UploadFile = File(...)):
                 inputs = processor(text=[text], images=[pil_img], return_tensors="pt").to(model.device)
 
                 with torch.no_grad():
-                    output = model.generate(**inputs, max_new_tokens=400, do_sample=False)
+                    output = model.generate(**inputs, max_new_tokens=600, do_sample=False)
 
                 decoded = processor.batch_decode(output[:, inputs["input_ids"].shape[1]:],
                                                  skip_special_tokens=True)[0].strip()
                 logger.info("VLM vehicle raw: %s", decoded)
 
-                json_match = re.search(r'\{.*\}', decoded, re.DOTALL)
-                if json_match:
-                    data = json.loads(json_match.group())
+                data = _parse_vlm_json(decoded)
+                if data:
                     description = data.get("description", "")
                     attributes = data.get("attributes", data)
                     if "description" not in data and "vehicle_type" in data:
