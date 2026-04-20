@@ -15,53 +15,57 @@ interface Detection {
 }
 
 interface PersonAttributes {
+  // dsabarinathan model
   gender: string;
   gender_confidence: number;
   age_group: string;
-  age_confidence: number;
-  clothing_upper: string;
-  clothing_upper_color: string;
-  clothing_lower: string;
-  clothing_lower_color: string;
-  headwear: string;
-  headwear_confidence: number;
-  footwear: string;
-  eyewear: string;
-  facial_hair: string;
-  carrying: string;
-  bag: boolean;
+  hair: string;
+  upper_clothing: string;
+  upper_color: string;
+  lower_clothing: string;
+  lower_color: string;
+  sleeve_length: string;
+  hat: boolean;
+  glasses: boolean;
   backpack: boolean;
-  build: string;
+  bag: boolean;
   clothing_style: string;
+  // DeepFace (from face)
+  precise_age: number | null;
+  emotion: string | null;
+  ethnicity: string | null;
+  // Upscaled image
+  upscaled_image_b64: string | null;
 }
 
 interface VehicleAttributes {
-  vehicle_type: string;
-  vehicle_type_confidence: number;
+  // dima806 model
+  make_model: string;
+  make_model_confidence: number;
+  // Intel model
   color: string;
   color_confidence: number;
-  make: string;
-  make_confidence: number;
-  condition: string;
-  condition_confidence: number;
+  vehicle_type: string;
+  vehicle_type_confidence: number;
+  // CLIP fallback
   direction: string;
-  occupants: string;
-  lights: string;
+  condition: string;
   damage_visible: boolean;
-  modifications: string;
   vehicle_class: string;
+  // Upscaled image
+  upscaled_image_b64: string | null;
 }
 
 interface AnalysisResult {
   type: string;
-  person_image_b64?: string;
+  person_image_b64?: string;  // 8x upscaled image
   face?: {
     face_bbox: { x: number; y: number; w: number; h: number };
     quality_score: number;
     embedding: number[] | null;
   } | null;
   face_image_b64?: string | null;
-  vehicle_image_b64?: string;
+  vehicle_image_b64?: string;  // 8x upscaled image
   plate?: {
     plate_text: string;
     confidence: number;
@@ -387,33 +391,39 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
                 </div>
               )}
 
-              {analysis && analysis.type === "person" && (
+              {analysis && analysis.type === "person" && (() => {
+                const attrs = analysis.attributes as PersonAttributes;
+                const mainImage = analysis.person_image_b64
+                  || (analysis.attributes as Record<string, string>).upscaled_image_b64
+                  || null;
+                return (
                 <div className="space-y-3">
                   <div className="h-px bg-gradient-to-r from-[#00f0ff]/30 to-transparent" />
 
-                  {/* Person + Face images */}
-                  <div className="flex gap-2">
-                    {analysis.person_image_b64 && (
-                      <div className="flex-1 space-y-1">
-                        <span className="font-heading text-[7px] uppercase tracking-[0.2em] text-[#4a6a8a]">PERSON CROP</span>
-                        <img
-                          src={`data:image/jpeg;base64,${analysis.person_image_b64}`}
-                          alt="Person crop"
-                          className="w-full rounded-sm border border-[#00f0ff]/20 object-contain max-h-48"
-                        />
-                      </div>
-                    )}
-                    {analysis.face_image_b64 && (
-                      <div className="w-24 shrink-0 space-y-1">
-                        <span className="font-heading text-[7px] uppercase tracking-[0.2em] text-[#4a6a8a]">FACE</span>
-                        <img
-                          src={`data:image/jpeg;base64,${analysis.face_image_b64}`}
-                          alt="Face crop"
-                          className="w-full rounded-sm border border-[#00ff88]/20 object-contain max-h-32"
-                        />
-                      </div>
-                    )}
-                  </div>
+                  {/* 8x Upscaled person image -- prominent */}
+                  {mainImage && (
+                    <div className="space-y-1">
+                      <span className="font-heading text-[7px] uppercase tracking-[0.2em] text-[#4a6a8a]">8X UPSCALED PERSON</span>
+                      <img
+                        src={`data:image/jpeg;base64,${mainImage}`}
+                        alt="Person 8x upscaled"
+                        className="w-full rounded-sm border border-[#00f0ff]/20 object-contain max-h-64"
+                        style={{ imageRendering: "auto" }}
+                      />
+                    </div>
+                  )}
+
+                  {/* Face crop */}
+                  {analysis.face_image_b64 && (
+                    <div className="space-y-1">
+                      <span className="font-heading text-[7px] uppercase tracking-[0.2em] text-[#4a6a8a]">FACE CROP</span>
+                      <img
+                        src={`data:image/jpeg;base64,${analysis.face_image_b64}`}
+                        alt="Face crop"
+                        className="w-full rounded-sm border border-[#00ff88]/20 object-contain max-h-32"
+                      />
+                    </div>
+                  )}
 
                   {/* Face info */}
                   {analysis.face && (
@@ -437,30 +447,61 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
                     </p>
                   )}
 
-                  {/* Person attributes */}
-                  {analysis.attributes && Object.keys(analysis.attributes).length > 0 && (() => {
-                    const attrs = analysis.attributes as PersonAttributes;
-                    return (
+                  {/* IDENTITY section */}
+                  {analysis.attributes && Object.keys(analysis.attributes).length > 0 && (
+                    <>
+                      <div className="h-px bg-gradient-to-r from-[#00f0ff]/20 to-transparent" />
                       <div className="space-y-2">
-                        <div className="h-px bg-gradient-to-r from-[#00f0ff]/20 to-transparent" />
-                        <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#00f0ff]">ATTRIBUTES</h4>
+                        <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#00f0ff]">IDENTITY</h4>
                         <div className="grid grid-cols-2 gap-2">
-                          <Cell label="GENDER" value={`${attrs.gender} (${(attrs.gender_confidence * 100).toFixed(0)}%)`} />
+                          <Cell
+                            label="GENDER"
+                            value={`${attrs.gender ?? "N/A"} (${attrs.gender_confidence != null ? (attrs.gender_confidence * 100).toFixed(0) : "?"}%)`}
+                            color={confidenceColor(attrs.gender_confidence)}
+                          />
                           <Cell label="AGE GROUP" value={attrs.age_group?.replace(/_/g, " ") ?? "N/A"} />
-                          <Cell label="UPPER CLOTHING" value={attrs.clothing_upper?.replace(/_/g, " ") ?? "N/A"} />
-                          <Cell label="UPPER COLOR" value={attrs.clothing_upper_color ?? "N/A"} />
-                          <Cell label="LOWER CLOTHING" value={attrs.clothing_lower?.replace(/_/g, " ") ?? "N/A"} />
-                          <Cell label="LOWER COLOR" value={attrs.clothing_lower_color ?? "N/A"} />
-                          <Cell label="HEADWEAR" value={`${attrs.headwear ?? "N/A"} (${(attrs.headwear_confidence * 100).toFixed(0)}%)`} />
-                          <Cell label="EYEWEAR" value={attrs.eyewear?.replace(/_/g, " ") ?? "N/A"} />
-                          <Cell label="FACIAL HAIR" value={attrs.facial_hair?.replace(/_/g, " ") ?? "N/A"} />
-                          <Cell label="CARRYING" value={attrs.carrying?.replace(/_/g, " ") ?? "N/A"} />
-                          <Cell label="BUILD" value={attrs.build ?? "N/A"} />
+                          <Cell label="PRECISE AGE" value={attrs.precise_age != null ? `~${attrs.precise_age} years` : "N/A"} />
+                          <Cell label="ETHNICITY" value={attrs.ethnicity?.replace(/_/g, " ") ?? "N/A"} />
+                          <Cell label="EMOTION" value={attrs.emotion?.replace(/_/g, " ") ?? "N/A"} />
+                        </div>
+                      </div>
+
+                      {/* APPEARANCE section */}
+                      <div className="h-px bg-gradient-to-r from-[#00f0ff]/20 to-transparent" />
+                      <div className="space-y-2">
+                        <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#00f0ff]">APPEARANCE</h4>
+                        <div className="grid grid-cols-2 gap-2">
+                          <Cell label="HAIR" value={attrs.hair?.replace(/_/g, " ") ?? "N/A"} />
+                          <Cell label="GLASSES" value={attrs.glasses != null ? (attrs.glasses ? "Yes" : "No") : "N/A"} />
+                          <Cell label="HAT" value={attrs.hat != null ? (attrs.hat ? "Yes" : "No") : "N/A"} />
+                        </div>
+                      </div>
+
+                      {/* CLOTHING section */}
+                      <div className="h-px bg-gradient-to-r from-[#00f0ff]/20 to-transparent" />
+                      <div className="space-y-2">
+                        <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#00f0ff]">CLOTHING</h4>
+                        <div className="grid grid-cols-2 gap-2">
+                          <Cell label="UPPER CLOTHING" value={attrs.upper_clothing?.replace(/_/g, " ") ?? "N/A"} />
+                          <Cell label="UPPER COLOR" value={attrs.upper_color?.replace(/_/g, " ") ?? "N/A"} />
+                          <Cell label="SLEEVE LENGTH" value={attrs.sleeve_length?.replace(/_/g, " ") ?? "N/A"} />
+                          <Cell label="LOWER CLOTHING" value={attrs.lower_clothing?.replace(/_/g, " ") ?? "N/A"} />
+                          <Cell label="LOWER COLOR" value={attrs.lower_color?.replace(/_/g, " ") ?? "N/A"} />
                           <Cell label="CLOTHING STYLE" value={attrs.clothing_style?.replace(/_/g, " ") ?? "N/A"} />
                         </div>
                       </div>
-                    );
-                  })()}
+
+                      {/* CARRYING section */}
+                      <div className="h-px bg-gradient-to-r from-[#00f0ff]/20 to-transparent" />
+                      <div className="space-y-2">
+                        <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#00f0ff]">CARRYING</h4>
+                        <div className="grid grid-cols-2 gap-2">
+                          <Cell label="BAG" value={attrs.bag != null ? (attrs.bag ? "Yes" : "No") : "N/A"} />
+                          <Cell label="BACKPACK" value={attrs.backpack != null ? (attrs.backpack ? "Yes" : "No") : "N/A"} />
+                        </div>
+                      </div>
+                    </>
+                  )}
 
                   <div className="h-px bg-gradient-to-r from-[#00f0ff]/20 to-transparent" />
                   <div className="space-y-2">
@@ -473,20 +514,27 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
                     </div>
                   </div>
                 </div>
-              )}
+                );
+              })()}
 
-              {analysis && analysis.type === "vehicle" && (
+              {analysis && analysis.type === "vehicle" && (() => {
+                const attrs = analysis.attributes as VehicleAttributes;
+                const mainImage = analysis.vehicle_image_b64
+                  || (analysis.attributes as Record<string, string>).upscaled_image_b64
+                  || null;
+                return (
                 <div className="space-y-3">
                   <div className="h-px bg-gradient-to-r from-[#00ff88]/30 to-transparent" />
 
-                  {/* Vehicle image */}
-                  {analysis.vehicle_image_b64 && (
+                  {/* 8x Upscaled vehicle image -- prominent */}
+                  {mainImage && (
                     <div className="space-y-1">
-                      <span className="font-heading text-[7px] uppercase tracking-[0.2em] text-[#4a6a8a]">VEHICLE CROP</span>
+                      <span className="font-heading text-[7px] uppercase tracking-[0.2em] text-[#4a6a8a]">8X UPSCALED VEHICLE</span>
                       <img
-                        src={`data:image/jpeg;base64,${analysis.vehicle_image_b64}`}
-                        alt="Vehicle crop"
-                        className="w-full rounded-sm border border-[#00ff88]/20 object-contain max-h-48"
+                        src={`data:image/jpeg;base64,${mainImage}`}
+                        alt="Vehicle 8x upscaled"
+                        className="w-full rounded-sm border border-[#00ff88]/20 object-contain max-h-64"
+                        style={{ imageRendering: "auto" }}
                       />
                     </div>
                   )}
@@ -500,7 +548,7 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
                           <img
                             src={`data:image/jpeg;base64,${analysis.plate.plate_image_b64}`}
                             alt="Plate crop"
-                            className="mx-auto max-w-full rounded-sm border border-[#00ff88]/20 object-contain max-h-20"
+                            className="mx-auto max-w-full rounded-sm border border-[#00ff88]/20 object-contain max-h-32"
                           />
                         </div>
                       )}
@@ -520,28 +568,59 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
                     </p>
                   )}
 
-                  {/* Vehicle attributes */}
-                  {analysis.attributes && Object.keys(analysis.attributes).length > 0 && (() => {
-                    const attrs = analysis.attributes as VehicleAttributes;
-                    return (
+                  {/* IDENTIFICATION section */}
+                  {analysis.attributes && Object.keys(analysis.attributes).length > 0 && (
+                    <>
+                      <div className="h-px bg-gradient-to-r from-[#00ff88]/20 to-transparent" />
                       <div className="space-y-2">
-                        <div className="h-px bg-gradient-to-r from-[#00ff88]/20 to-transparent" />
-                        <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#00ff88]">ATTRIBUTES</h4>
+                        <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#00ff88]">IDENTIFICATION</h4>
                         <div className="grid grid-cols-2 gap-2">
-                          <Cell label="VEHICLE TYPE" value={`${attrs.vehicle_type?.replace(/_/g, " ") ?? "N/A"} (${(attrs.vehicle_type_confidence * 100).toFixed(0)}%)`} />
-                          <Cell label="COLOR" value={`${attrs.color ?? "N/A"} (${(attrs.color_confidence * 100).toFixed(0)}%)`} />
-                          <Cell label="MAKE" value={`${attrs.make ?? "N/A"} (${(attrs.make_confidence * 100).toFixed(0)}%)`} />
-                          <Cell label="CONDITION" value={`${attrs.condition ?? "N/A"} (${(attrs.condition_confidence * 100).toFixed(0)}%)`} />
-                          <Cell label="DIRECTION" value={attrs.direction?.replace(/_/g, " ") ?? "N/A"} />
-                          <Cell label="VEHICLE CLASS" value={attrs.vehicle_class?.replace(/_/g, " ") ?? "N/A"} />
-                          <Cell label="OCCUPANTS" value={attrs.occupants?.replace(/_/g, " ") ?? "N/A"} />
-                          <Cell label="DAMAGE VISIBLE" value={attrs.damage_visible ? "Yes" : "No"} color={attrs.damage_visible ? "#ff2d78" : "#00ff88"} />
-                          <Cell label="LIGHTS" value={attrs.lights ?? "N/A"} />
-                          <Cell label="MODIFICATIONS" value={attrs.modifications?.replace(/_/g, " ") ?? "N/A"} />
+                          <Cell
+                            label="MAKE / MODEL"
+                            value={attrs.make_model?.replace(/_/g, " ") ?? "N/A"}
+                            color={confidenceColor(attrs.make_model_confidence)}
+                          />
+                          <Cell
+                            label="MAKE CONFIDENCE"
+                            value={attrs.make_model_confidence != null ? `${(attrs.make_model_confidence * 100).toFixed(0)}%` : "N/A"}
+                            color={confidenceColor(attrs.make_model_confidence)}
+                          />
+                          <Cell
+                            label="COLOR"
+                            value={attrs.color ?? "N/A"}
+                            color={confidenceColor(attrs.color_confidence)}
+                          />
+                          <Cell
+                            label="COLOR CONFIDENCE"
+                            value={attrs.color_confidence != null ? `${(attrs.color_confidence * 100).toFixed(0)}%` : "N/A"}
+                            color={confidenceColor(attrs.color_confidence)}
+                          />
+                          <Cell
+                            label="VEHICLE TYPE"
+                            value={attrs.vehicle_type?.replace(/_/g, " ") ?? "N/A"}
+                            color={confidenceColor(attrs.vehicle_type_confidence)}
+                          />
+                          <Cell
+                            label="TYPE CONFIDENCE"
+                            value={attrs.vehicle_type_confidence != null ? `${(attrs.vehicle_type_confidence * 100).toFixed(0)}%` : "N/A"}
+                            color={confidenceColor(attrs.vehicle_type_confidence)}
+                          />
                         </div>
                       </div>
-                    );
-                  })()}
+
+                      {/* STATUS section */}
+                      <div className="h-px bg-gradient-to-r from-[#00ff88]/20 to-transparent" />
+                      <div className="space-y-2">
+                        <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#00ff88]">STATUS</h4>
+                        <div className="grid grid-cols-2 gap-2">
+                          <Cell label="DIRECTION" value={attrs.direction?.replace(/_/g, " ") ?? "N/A"} />
+                          <Cell label="CONDITION" value={attrs.condition?.replace(/_/g, " ") ?? "N/A"} />
+                          <Cell label="DAMAGE VISIBLE" value={attrs.damage_visible != null ? (attrs.damage_visible ? "Yes" : "No") : "N/A"} color={attrs.damage_visible ? "#ff2d78" : "#00ff88"} />
+                          <Cell label="VEHICLE CLASS" value={attrs.vehicle_class?.replace(/_/g, " ") ?? "N/A"} />
+                        </div>
+                      </div>
+                    </>
+                  )}
 
                   <div className="h-px bg-gradient-to-r from-[#00ff88]/20 to-transparent" />
                   <div className="space-y-2">
@@ -554,13 +633,21 @@ export function InteractiveCameraViewer({ camera, onClose }: Props) {
                     </div>
                   </div>
                 </div>
-              )}
+                );
+              })()}
             </div>
           </motion.div>
         )}
       </AnimatePresence>
     </motion.div>
   );
+}
+
+function confidenceColor(confidence: number | null | undefined): string | undefined {
+  if (confidence == null) return undefined;
+  if (confidence > 0.7) return "#00ff88";
+  if (confidence >= 0.4) return "#ffaa00";
+  return "#ff2d78";
 }
 
 function Cell({ label, value, color }: { label: string; value: string; color?: string }) {
