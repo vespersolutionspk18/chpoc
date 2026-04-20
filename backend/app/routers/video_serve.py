@@ -114,6 +114,21 @@ async def analyze_person(
             if resp.status_code == 200:
                 faces = resp.json()
                 if faces:
+                    # Pick the face closest to center of image (the actual target person,
+                    # not a neighbor captured by crop padding)
+                    try:
+                        img_for_size = Image.open(io.BytesIO(face_image_for_detect))
+                        cx, cy = img_for_size.width / 2, img_for_size.height / 2
+
+                        def face_center_dist(f):
+                            fb = f.get("face_bbox", {})
+                            fx = fb.get("x", 0) + fb.get("w", 0) / 2
+                            fy = fb.get("y", 0) + fb.get("h", 0) / 2
+                            return (fx - cx) ** 2 + (fy - cy) ** 2
+
+                        faces.sort(key=face_center_dist)
+                    except Exception:
+                        pass
                     results["face"] = faces[0]
         except Exception as e:
             logger.warning("Face detection failed: %s", e)

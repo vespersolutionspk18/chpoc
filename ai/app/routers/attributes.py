@@ -643,6 +643,20 @@ async def extract_person_attributes(image: UploadFile = File(...)):
         except Exception:
             clothing_style = "unknown"
 
+        # CLIP hat verification (PAR misses Pakistani topis/prayer caps)
+        try:
+            hat_probs = _classify_zero_shot(pil_img, [
+                "person wearing a hat or cap or topi or turban or head covering",
+                "person with bare head and no hat",
+            ])
+            clip_hat = bool(hat_probs[0] > hat_probs[1])
+            # Override PAR if CLIP detects a hat
+            if clip_hat and not par_result.get("hat", False):
+                par_result["hat"] = True
+                logger.info("CLIP overrode PAR: hat detected")
+        except Exception:
+            pass
+
         # Face covered: mask, scarf, niqab, veil
         try:
             fc_probs = _classify_zero_shot(pil_img, [
