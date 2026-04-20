@@ -771,7 +771,7 @@ async def extract_vehicle_attributes(image: UploadFile = File(...)):
             "condition": condition,
             "damage_visible": damage_visible,
             "vehicle_class": vehicle_class,
-        }
+        })
     except Exception as e:
         logger.error("attributes/vehicle unexpected error: %s\n%s", e, traceback.format_exc())
         return {"error": str(e)}
