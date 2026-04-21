@@ -22,16 +22,43 @@ VIDEO_MAP = {
     "00000000-0000-4000-8000-000000000005": "clip_rawalpindi_streets.mp4",
 }
 
+# NVR camera → camera UUID mapping (latest recording per camera)
+NVR_CAMERA_MAP = {
+    "D01": "00000000-0000-4000-8000-000000000001",
+    "D03": "00000000-0000-4000-8000-000000000002",
+    "D04": "00000000-0000-4000-8000-000000000003",
+    "D08": "00000000-0000-4000-8000-000000000004",
+    "D10": "00000000-0000-4000-8000-000000000005",
+}
+NVR_DIR = Path("/root/camera_feeds/mp4")
+
+
+def _get_latest_nvr(camera_id: str) -> Path | None:
+    """Find the latest NVR recording for a camera UUID."""
+    for nvr_cam, uuid in NVR_CAMERA_MAP.items():
+        if uuid == camera_id:
+            # Find all recordings for this NVR camera, pick latest
+            files = sorted(NVR_DIR.glob(f"{nvr_cam}_*.mp4"), reverse=True)
+            if files:
+                return files[0]
+    return None
+
 
 @router.get("/file/{camera_id}")
 async def get_video_file(camera_id: str):
-    """Serve the video file directly for HTML5 video playback."""
-    video_name = VIDEO_MAP.get(camera_id)
-    if not video_name:
-        raise HTTPException(404, "No video for this camera")
-    video_path = Path(settings.VIDEO_DIR) / video_name
-    if not video_path.exists():
-        raise HTTPException(404, f"Video file not found: {video_name}")
+    """Serve video file — NVR recordings first, fallback to test clips."""
+    # Try NVR recordings first
+    nvr_file = _get_latest_nvr(camera_id)
+    if nvr_file and nvr_file.exists():
+        video_path = nvr_file
+    else:
+        # Fallback to test clips
+        video_name = VIDEO_MAP.get(camera_id)
+        if not video_name:
+            raise HTTPException(404, "No video for this camera")
+        video_path = Path(settings.VIDEO_DIR) / video_name
+        if not video_path.exists():
+            raise HTTPException(404, f"Video file not found: {video_name}")
     return FileResponse(
         str(video_path),
         media_type="video/mp4",
