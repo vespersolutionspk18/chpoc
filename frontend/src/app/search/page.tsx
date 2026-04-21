@@ -65,16 +65,11 @@ const VEHICLE_TYPES = [
   "any",
 ] as const;
 
-// Simulated track path points for a selected result
+// Track path from camera location (real camera coords, not simulated offsets)
 function getTrackPath(result: SearchResult, cameras: Camera[]) {
   const cam = cameras.find((c) => c.id === result.camera_id);
   if (!cam) return [];
-  return [
-    { lat: cam.location_lat - 0.002, lng: cam.location_lng - 0.003 },
-    { lat: cam.location_lat - 0.001, lng: cam.location_lng - 0.001 },
-    { lat: cam.location_lat, lng: cam.location_lng },
-    { lat: cam.location_lat + 0.001, lng: cam.location_lng + 0.002 },
-  ];
+  return [{ lat: cam.location_lat, lng: cam.location_lng }];
 }
 
 // ---------------------------------------------------------------------------
@@ -409,16 +404,15 @@ export default function SearchPage() {
                 )
               }
             >
-              {/* Thumbnail placeholder with scan-line overlay */}
+              {/* Thumbnail — real image if available, icon fallback */}
               <div className="relative aspect-video rounded-sm bg-gradient-to-br from-slate-800 to-slate-950 flex items-center justify-center overflow-hidden mb-3">
-                <div
-                  className="pointer-events-none absolute inset-0 opacity-[0.04]"
-                  style={{
-                    backgroundImage:
-                      "repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(255,255,255,0.05) 2px, rgba(255,255,255,0.05) 4px)",
-                  }}
-                />
-                {result.object_type === "person" ? (
+                {result.thumbnail_url ? (
+                  <img
+                    src={result.thumbnail_url}
+                    alt="match"
+                    className="absolute inset-0 w-full h-full object-cover"
+                  />
+                ) : result.object_type === "person" ? (
                   <User className="size-10 text-[#4a6a8a]/30" />
                 ) : (
                   <Car className="size-10 text-[#4a6a8a]/30" />
@@ -431,7 +425,13 @@ export default function SearchPage() {
                     {result.camera_name}
                   </p>
                   <p className="font-data text-[10px] text-[#4a6a8a]">
-                    {result.timestamp}
+                    {result.attributes?.video_file
+                      ? `${String(result.attributes.video_file).replace("clip_","").replace(".mp4","").replace(/_/g," ")} @ ${
+                          result.attributes.frame != null
+                            ? `frame ${result.attributes.frame}`
+                            : result.timestamp
+                        }`
+                      : result.timestamp}
                   </p>
                 </div>
                 <span className={`font-data text-xs shrink-0 ${confidenceColor(result.confidence)}`}>
