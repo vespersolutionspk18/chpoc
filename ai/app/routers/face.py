@@ -160,30 +160,18 @@ async def search_face_by_image(image: UploadFile = File(...), top_k: int = Form(
 # Index builder — processes all videos and extracts face embeddings
 # ---------------------------------------------------------------------------
 
-VIDEO_DIRS = [
-    "/workspace/safe-city/test-data/pakistani",
-    "/root/camera_feeds/mp4",
-]
+NVR_VIDEO_DIR = "/root/camera_feeds/mp4"
 
-# All videos across all directories — auto-discovered
 def _discover_videos() -> list[tuple[str, str]]:
-    """Find all MP4 files across video directories. Returns [(camera_id, full_path)]."""
-    import glob
+    """Find NVR MP4 files only. Returns [(camera_id, full_path)]."""
+    import glob, re
     videos = []
-    seen = set()
-    for vdir in VIDEO_DIRS:
-        for path in sorted(glob.glob(f"{vdir}/*.mp4")):
-            fname = Path(path).name
-            # Skip duplicates (same filename in different dirs)
-            if fname in seen:
-                continue
-            # Skip non-h264 originals (use h264 versions if available)
-            if ".f399." in fname or ".f137." in fname or ".f299." in fname or ".f140." in fname:
-                continue
-            seen.add(fname)
-            # Generate camera ID from filename
-            cam_id = fname.replace(".mp4", "")[:36]
-            videos.append((cam_id, path))
+    for path in sorted(glob.glob(f"{NVR_VIDEO_DIR}/*.mp4")):
+        fname = Path(path).name
+        # Extract camera ID (D01, D03, etc.)
+        match = re.match(r"(D\d+)_", fname)
+        cam_id = match.group(1) if match else fname.replace(".mp4", "")
+        videos.append((cam_id, path))
     return videos
 
 # Legacy map for face index (still uses old camera UUIDs)
