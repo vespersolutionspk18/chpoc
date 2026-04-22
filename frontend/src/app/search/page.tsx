@@ -43,27 +43,20 @@ import type { Camera, SearchResult } from "@/lib/types";
 
 const CityMap = dynamic(() => import("@/components/city-map"), { ssr: false });
 
-const COLOR_OPTIONS = [
-  "red",
-  "blue",
-  "black",
-  "white",
-  "green",
-  "grey",
-  "brown",
-  "yellow",
-  "none",
-] as const;
+const COLOR_OPTIONS = ["red", "blue", "black", "white", "green", "grey", "brown", "yellow", "orange", "beige", "none"] as const;
+const YES_NO_ANY = ["yes", "no", "any"] as const;
 
-const YES_NO_OPTIONS = ["yes", "no", "any"] as const;
-const VEHICLE_TYPES = [
-  "car",
-  "motorcycle",
-  "rickshaw",
-  "truck",
-  "van",
-  "any",
-] as const;
+// Person-specific attribute options (matches VLM output)
+const GENDER_OPTIONS = ["male", "female", "any"] as const;
+const AGE_OPTIONS = ["child", "young_adult", "adult", "elderly", "any"] as const;
+const CLOTHING_STYLE_OPTIONS = ["traditional Pakistani", "western", "uniform", "casual", "any"] as const;
+const UPPER_CLOTHING_OPTIONS = ["kurta/kameez", "shirt", "t-shirt", "jacket", "sweater", "abaya/burqa", "any"] as const;
+const LOWER_CLOTHING_OPTIONS = ["shalwar", "trousers", "jeans", "skirt/dress", "shorts", "any"] as const;
+
+// Vehicle-specific attribute options (matches VLM output)
+const VEHICLE_TYPES = ["sedan", "SUV", "hatchback", "truck", "van", "bus", "motorcycle", "auto-rickshaw", "chingchi", "pickup", "wagon", "minivan", "any"] as const;
+const VEHICLE_MAKES = ["Toyota", "Suzuki", "Honda", "Hyundai", "Kia", "Sazgar", "any"] as const;
+const CONDITION_OPTIONS = ["new", "good", "old", "damaged", "any"] as const;
 
 // Track path from camera location (real camera coords, not simulated offsets)
 function getTrackPath(result: SearchResult, cameras: Camera[]) {
@@ -114,15 +107,28 @@ export default function SearchPage() {
   const [searching, setSearching] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
 
-  // Attribute search state
-  const [upperColor, setUpperColor] = useState("none");
-  const [lowerColor, setLowerColor] = useState("none");
-  const [hat, setHat] = useState("any");
-  const [glasses, setGlasses] = useState("any");
-  const [bag, setBag] = useState("any");
-  const [backpack, setBackpack] = useState("any");
-  const [vehicleType, setVehicleType] = useState("any");
-  const [vehicleColor, setVehicleColor] = useState("none");
+  // Person attribute search state
+  const [pGender, setPGender] = useState("any");
+  const [pAge, setPAge] = useState("any");
+  const [pUpperClothing, setPUpperClothing] = useState("any");
+  const [pUpperColor, setPUpperColor] = useState("none");
+  const [pLowerClothing, setPLowerClothing] = useState("any");
+  const [pLowerColor, setPLowerColor] = useState("none");
+  const [pClothingStyle, setPClothingStyle] = useState("any");
+  const [pBeard, setPBeard] = useState("any");
+  const [pGlasses, setPGlasses] = useState("any");
+  const [pHeadwear, setPHeadwear] = useState("any");
+  const [pFaceCovered, setPFaceCovered] = useState("any");
+
+  // Vehicle attribute search state
+  const [vType, setVType] = useState("any");
+  const [vColor, setVColor] = useState("none");
+  const [vMake, setVMake] = useState("any");
+  const [vCondition, setVCondition] = useState("any");
+
+  // Vehicle image search state
+  const [vehicleFile, setVehicleFile] = useState<File | null>(null);
+  const [vehiclePreview, setVehiclePreview] = useState<string | null>(null);
 
   // Fetch cameras from API
   useEffect(() => {
@@ -189,33 +195,83 @@ export default function SearchPage() {
     }
   }, [plateText, cameraFilter, startDate, endDate]);
 
-  const handleAttributeSearch = useCallback(async () => {
+  const handlePersonSearch = useCallback(async () => {
     setSearching(true);
     setHasSearched(true);
     try {
       const attrs: Record<string, unknown> = {};
-      if (upperColor !== "none") attrs.upper_color = upperColor;
-      if (lowerColor !== "none") attrs.lower_color = lowerColor;
-      if (hat !== "any") attrs.hat = hat === "yes";
-      if (glasses !== "any") attrs.glasses = glasses === "yes";
-      if (bag !== "any") attrs.bag = bag === "yes";
-      if (backpack !== "any") attrs.backpack = backpack === "yes";
-      if (vehicleType !== "any") attrs.vehicle_type = vehicleType;
-      if (vehicleColor !== "none") attrs.color = vehicleColor;
+      if (pGender !== "any") attrs.gender = pGender;
+      if (pAge !== "any") attrs.approximate_age = pAge;
+      if (pUpperClothing !== "any") attrs.upper_body = pUpperClothing;
+      if (pUpperColor !== "none") attrs.upper_color = pUpperColor;
+      if (pLowerClothing !== "any") attrs.lower_body = pLowerClothing;
+      if (pLowerColor !== "none") attrs.lower_color = pLowerColor;
+      if (pClothingStyle !== "any") attrs.clothing_style = pClothingStyle;
+      if (pBeard !== "any") attrs.beard = pBeard === "yes" ? "yes" : "clean-shaven";
+      if (pGlasses !== "any") attrs.glasses = pGlasses;
+      if (pHeadwear !== "any") attrs.headwear = pHeadwear;
+      if (pFaceCovered !== "any") attrs.face_visible = pFaceCovered === "yes" ? "no" : "yes";
 
       const res = await searchByAttributes({
+        object_type: "person",
         attributes: attrs,
         camera_ids: getSelectedCameraIds(),
         start_time: `${startDate}T00:00:00Z`,
         end_time: `${endDate}T23:59:59Z`,
       });
       setResults(res);
-    } catch {
-      // Keep current results
-    } finally {
-      setSearching(false);
-    }
-  }, [upperColor, lowerColor, hat, glasses, bag, backpack, vehicleType, vehicleColor, cameraFilter, startDate, endDate]);
+    } catch { /* keep */ } finally { setSearching(false); }
+  }, [pGender, pAge, pUpperClothing, pUpperColor, pLowerClothing, pLowerColor, pClothingStyle, pBeard, pGlasses, pHeadwear, pFaceCovered, cameraFilter, startDate, endDate]);
+
+  const handleVehicleSearch = useCallback(async () => {
+    setSearching(true);
+    setHasSearched(true);
+    try {
+      const attrs: Record<string, unknown> = {};
+      if (vType !== "any") attrs.vehicle_type = vType;
+      if (vColor !== "none") attrs.color = vColor;
+      if (vMake !== "any") attrs.make = vMake;
+      if (vCondition !== "any") attrs.condition = vCondition;
+
+      const res = await searchByAttributes({
+        object_type: "vehicle",
+        attributes: attrs,
+        camera_ids: getSelectedCameraIds(),
+        start_time: `${startDate}T00:00:00Z`,
+        end_time: `${endDate}T23:59:59Z`,
+      });
+      setResults(res);
+    } catch { /* keep */ } finally { setSearching(false); }
+  }, [vType, vColor, vMake, vCondition, cameraFilter, startDate, endDate]);
+
+  const handleVehicleImageSearch = useCallback(async () => {
+    if (!vehicleFile) return;
+    setSearching(true);
+    setHasSearched(true);
+    try {
+      const form = new FormData();
+      form.append("image", vehicleFile);
+      const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+      const resp = await fetch(`${API_URL}/api/video/search-vehicle-by-image`, {
+        method: "POST",
+        body: form,
+      });
+      if (resp.ok) {
+        const data = await resp.json();
+        const mapped = (data.matches ?? []).map((m: Record<string, unknown>, i: number) => ({
+          track_id: `vmatch-${i}`,
+          camera_id: (m.camera_id as string) ?? "",
+          camera_name: ((m.video_file as string) ?? "").replace("clip_", "").replace(".mp4", "").replace(/_/g, " "),
+          timestamp: new Date(((m.timestamp_sec as number) ?? 0) * 1000).toISOString(),
+          object_type: "vehicle",
+          confidence: (m.similarity as number) ?? 0,
+          thumbnail_url: m.thumbnail_b64 ? `data:image/jpeg;base64,${m.thumbnail_b64}` : null,
+          attributes: { vehicle_class: m.vehicle_class, color: m.dominant_color, video_file: m.video_file },
+        }));
+        setResults(mapped);
+      }
+    } catch { /* keep */ } finally { setSearching(false); }
+  }, [vehicleFile]);
 
   function renderObjectTypeBadge(type: string) {
     const config: Record<string, { className: string; icon: typeof User }> = {
@@ -305,7 +361,7 @@ export default function SearchPage() {
 
       {/* ----- Tabs ----- */}
       <Tabs defaultValue={0}>
-        <TabsList className="h-auto gap-0 rounded-none bg-transparent p-0">
+        <TabsList className="h-auto gap-0 rounded-none bg-transparent p-0 flex-wrap">
           <TabsTrigger value={0} className={tabTriggerClass}>
             <ScanFace className="mr-1.5 size-3.5" />
             FACE MATCH
@@ -315,72 +371,102 @@ export default function SearchPage() {
             PLATE TRACE
           </TabsTrigger>
           <TabsTrigger value={2} className={tabTriggerClass}>
-            <SlidersHorizontal className="mr-1.5 size-3.5" />
-            ATTRIBUTE SCAN
+            <User className="mr-1.5 size-3.5" />
+            PERSON SEARCH
+          </TabsTrigger>
+          <TabsTrigger value={3} className={tabTriggerClass}>
+            <Car className="mr-1.5 size-3.5" />
+            VEHICLE SEARCH
           </TabsTrigger>
         </TabsList>
 
-        {/* --- Face Search --- */}
+        {/* ─── Face Search ─── */}
         <TabsContent value={0} className="space-y-4 pt-4">
-          <ImageUploadZone
-            onFileSelect={handleFaceFileSelect}
-            preview={facePreview}
-          />
+          <ImageUploadZone onFileSelect={handleFaceFileSelect} preview={facePreview} />
           {cameraFilterRow}
-          <Button
-            disabled={searching || !faceFile}
-            onClick={handleFaceSearch}
-            className="gap-2 rounded-sm border border-[#00f0ff]/30 bg-[#00f0ff]/10 font-heading text-[10px] uppercase tracking-wider text-[#00f0ff] hover:bg-[#00f0ff]/20 hover:shadow-[0_0_15px_rgba(0,240,255,0.2)]"
-          >
+          <Button disabled={searching || !faceFile} onClick={handleFaceSearch}
+            className="gap-2 rounded-sm border border-[#00f0ff]/30 bg-[#00f0ff]/10 font-heading text-[10px] uppercase tracking-wider text-[#00f0ff] hover:bg-[#00f0ff]/20">
             {searching ? <Loader2 className="size-3.5 animate-spin" /> : <Search className="size-3.5" />}
-            {searching ? "SCANNING..." : "INITIATE SCAN"}
+            {searching ? "SCANNING..." : "INITIATE FACE SCAN"}
           </Button>
         </TabsContent>
 
-        {/* --- Plate Search --- */}
+        {/* ─── Plate Search ─── */}
         <TabsContent value={1} className="space-y-4 pt-4">
           <div className="max-w-md">
-            <label className="font-heading text-[9px] uppercase tracking-[0.2em] text-[#4a6a8a] mb-1.5 block">
-              License Plate
-            </label>
-            <Input
-              placeholder="ENTER PLATE DESIGNATION"
-              value={plateText}
-              onChange={(e) => setPlateText(e.target.value)}
-              className="glass-deep border-[#00f0ff]/10 font-data text-sm uppercase tracking-wider focus:border-[#00f0ff]/40"
-            />
+            <label className="font-heading text-[9px] uppercase tracking-[0.2em] text-[#4a6a8a] mb-1.5 block">License Plate</label>
+            <Input placeholder="ENTER PLATE NUMBER" value={plateText} onChange={(e) => setPlateText(e.target.value)}
+              className="glass-deep border-[#00f0ff]/10 font-data text-sm uppercase tracking-wider focus:border-[#00f0ff]/40" />
           </div>
           {cameraFilterRow}
-          <Button
-            disabled={searching || !plateText.trim()}
-            onClick={handlePlateSearch}
-            className="gap-2 rounded-sm border border-[#ffaa00]/30 bg-[#ffaa00]/10 font-heading text-[10px] uppercase tracking-wider text-[#ffaa00] hover:bg-[#ffaa00]/20 hover:shadow-[0_0_15px_rgba(255,170,0,0.2)]"
-          >
+          <Button disabled={searching || !plateText.trim()} onClick={handlePlateSearch}
+            className="gap-2 rounded-sm border border-[#ffaa00]/30 bg-[#ffaa00]/10 font-heading text-[10px] uppercase tracking-wider text-[#ffaa00] hover:bg-[#ffaa00]/20">
             {searching ? <Loader2 className="size-3.5 animate-spin" /> : <Search className="size-3.5" />}
-            {searching ? "TRACING..." : "TRACE"}
+            {searching ? "TRACING..." : "TRACE PLATE"}
           </Button>
         </TabsContent>
 
-        {/* --- Attribute Search --- */}
+        {/* ─── Person Attribute Search ─── */}
         <TabsContent value={2} className="space-y-4 pt-4">
-          <div className="grid grid-cols-2 gap-4 max-w-2xl lg:grid-cols-4">
-            <SelectField label="UPPER COLOR" value={upperColor} onChange={setUpperColor} options={[...COLOR_OPTIONS]} />
-            <SelectField label="LOWER COLOR" value={lowerColor} onChange={setLowerColor} options={[...COLOR_OPTIONS]} />
-            <SelectField label="HAT" value={hat} onChange={setHat} options={[...YES_NO_OPTIONS]} />
-            <SelectField label="GLASSES" value={glasses} onChange={setGlasses} options={[...YES_NO_OPTIONS]} />
-            <SelectField label="BAG" value={bag} onChange={setBag} options={[...YES_NO_OPTIONS]} />
-            <SelectField label="BACKPACK" value={backpack} onChange={setBackpack} options={[...YES_NO_OPTIONS]} />
-            <SelectField label="VEHICLE TYPE" value={vehicleType} onChange={setVehicleType} options={[...VEHICLE_TYPES]} />
-            <SelectField label="VEHICLE COLOR" value={vehicleColor} onChange={setVehicleColor} options={[...COLOR_OPTIONS]} />
+          <h3 className="font-heading text-[10px] uppercase tracking-widest text-[#00f0ff]/70">IDENTITY</h3>
+          <div className="grid grid-cols-2 gap-3 max-w-3xl lg:grid-cols-4">
+            <SelectField label="GENDER" value={pGender} onChange={setPGender} options={[...GENDER_OPTIONS]} />
+            <SelectField label="AGE GROUP" value={pAge} onChange={setPAge} options={[...AGE_OPTIONS]} />
+            <SelectField label="BEARD" value={pBeard} onChange={setPBeard} options={[...YES_NO_ANY]} />
+            <SelectField label="GLASSES" value={pGlasses} onChange={setPGlasses} options={[...YES_NO_ANY]} />
           </div>
+
+          <h3 className="font-heading text-[10px] uppercase tracking-widest text-[#00f0ff]/70 pt-2">APPEARANCE</h3>
+          <div className="grid grid-cols-2 gap-3 max-w-3xl lg:grid-cols-4">
+            <SelectField label="HEADWEAR" value={pHeadwear} onChange={setPHeadwear} options={["topi", "turban", "cap", "helmet", "any"]} />
+            <SelectField label="FACE COVERED" value={pFaceCovered} onChange={setPFaceCovered} options={[...YES_NO_ANY]} />
+            <SelectField label="CLOTHING STYLE" value={pClothingStyle} onChange={setPClothingStyle} options={[...CLOTHING_STYLE_OPTIONS]} />
+          </div>
+
+          <h3 className="font-heading text-[10px] uppercase tracking-widest text-[#00f0ff]/70 pt-2">CLOTHING</h3>
+          <div className="grid grid-cols-2 gap-3 max-w-3xl lg:grid-cols-4">
+            <SelectField label="UPPER BODY" value={pUpperClothing} onChange={setPUpperClothing} options={[...UPPER_CLOTHING_OPTIONS]} />
+            <SelectField label="UPPER COLOR" value={pUpperColor} onChange={setPUpperColor} options={[...COLOR_OPTIONS]} />
+            <SelectField label="LOWER BODY" value={pLowerClothing} onChange={setPLowerClothing} options={[...LOWER_CLOTHING_OPTIONS]} />
+            <SelectField label="LOWER COLOR" value={pLowerColor} onChange={setPLowerColor} options={[...COLOR_OPTIONS]} />
+          </div>
+
           {cameraFilterRow}
-          <Button
-            disabled={searching}
-            onClick={handleAttributeSearch}
-            className="gap-2 rounded-sm border border-[#00ff88]/30 bg-[#00ff88]/10 font-heading text-[10px] uppercase tracking-wider text-[#00ff88] hover:bg-[#00ff88]/20 hover:shadow-[0_0_15px_rgba(0,255,136,0.2)]"
-          >
+          <Button disabled={searching} onClick={handlePersonSearch}
+            className="gap-2 rounded-sm border border-[#00f0ff]/30 bg-[#00f0ff]/10 font-heading text-[10px] uppercase tracking-wider text-[#00f0ff] hover:bg-[#00f0ff]/20">
+            {searching ? <Loader2 className="size-3.5 animate-spin" /> : <User className="size-3.5" />}
+            {searching ? "SEARCHING..." : "SEARCH PERSONS"}
+          </Button>
+        </TabsContent>
+
+        {/* ─── Vehicle Search ─── */}
+        <TabsContent value={3} className="space-y-4 pt-4">
+          <h3 className="font-heading text-[10px] uppercase tracking-widest text-[#00ff88]/70">REVERSE IMAGE SEARCH</h3>
+          <ImageUploadZone
+            onFileSelect={(file: File) => { setVehicleFile(file); setVehiclePreview(URL.createObjectURL(file)); }}
+            preview={vehiclePreview}
+          />
+          <Button disabled={searching || !vehicleFile} onClick={handleVehicleImageSearch}
+            className="gap-2 rounded-sm border border-[#ff2d78]/30 bg-[#ff2d78]/10 font-heading text-[10px] uppercase tracking-wider text-[#ff2d78] hover:bg-[#ff2d78]/20">
             {searching ? <Loader2 className="size-3.5 animate-spin" /> : <Search className="size-3.5" />}
-            {searching ? "SEARCHING..." : "SEARCH"}
+            {searching ? "SEARCHING..." : "FIND SIMILAR VEHICLES"}
+          </Button>
+
+          <div className="h-px bg-gradient-to-r from-transparent via-white/10 to-transparent my-2" />
+
+          <h3 className="font-heading text-[10px] uppercase tracking-widest text-[#00ff88]/70">ATTRIBUTE SEARCH</h3>
+          <div className="grid grid-cols-2 gap-3 max-w-3xl lg:grid-cols-4">
+            <SelectField label="VEHICLE TYPE" value={vType} onChange={setVType} options={[...VEHICLE_TYPES]} />
+            <SelectField label="COLOR" value={vColor} onChange={setVColor} options={[...COLOR_OPTIONS]} />
+            <SelectField label="MAKE" value={vMake} onChange={setVMake} options={[...VEHICLE_MAKES]} />
+            <SelectField label="CONDITION" value={vCondition} onChange={setVCondition} options={[...CONDITION_OPTIONS]} />
+          </div>
+
+          {cameraFilterRow}
+          <Button disabled={searching} onClick={handleVehicleSearch}
+            className="gap-2 rounded-sm border border-[#00ff88]/30 bg-[#00ff88]/10 font-heading text-[10px] uppercase tracking-wider text-[#00ff88] hover:bg-[#00ff88]/20">
+            {searching ? <Loader2 className="size-3.5 animate-spin" /> : <Car className="size-3.5" />}
+            {searching ? "SEARCHING..." : "SEARCH VEHICLES"}
           </Button>
         </TabsContent>
       </Tabs>
