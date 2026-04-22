@@ -112,69 +112,81 @@ async def analyze_person(
 
     upscaled_person_bytes: bytes | None = None
 
+    import asyncio
+
     async with httpx.AsyncClient() as client:
-        # 1. Person attributes FIRST (AI service does 8x upscale internally)
-        try:
-            resp = await client.post(
-                f"{settings.AI_SERVICE_URL}/attributes/person",
-                files={"image": ("crop.jpg", contents, "image/jpeg")},
-                timeout=60.0,
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                upscaled_b64 = data.pop("upscaled_image_b64", None)
-                if upscaled_b64:
-                    results["person_image_b64"] = upscaled_b64
-                    upscaled_person_bytes = base64.b64decode(upscaled_b64)
-                # New format: {description, attributes} — pass through
-                results["description"] = data.get("description", "")
-                results["attributes"] = data.get("attributes", data)
-            else:
-                logger.warning("Person attributes returned %d: %s", resp.status_code, resp.text[:200])
-        except Exception as e:
-            logger.warning("Person attributes failed: %s", e)
+        # Run attributes + face detection IN PARALLEL (saves ~1-2s)
+        async def get_attributes():
+            try:
+                resp = await client.post(
+                    f"{settings.AI_SERVICE_URL}/attributes/person",
+                    files={"image": ("crop.jpg", contents, "image/jpeg")},
+                    timeout=60.0,
+                )
+                if resp.status_code == 200:
+                    return resp.json()
+                logger.warning("Person attributes returned %d", resp.status_code)
+            except Exception as e:
+                logger.warning("Person attributes failed: %s", e)
+            return None
 
-        # 2. Face detection on UPSCALED image (not raw crop — raw is too small)
-        face_image_for_detect = upscaled_person_bytes if upscaled_person_bytes else contents
-        try:
-            resp = await client.post(
-                f"{settings.AI_SERVICE_URL}/face/detect",
-                files={"image": ("crop.jpg", face_image_for_detect, "image/jpeg")},
-                timeout=10.0,
-            )
-            if resp.status_code == 200:
-                faces = resp.json()
-                if faces:
-                    # Only accept faces within the CENTER region of the image.
-                    # The crop has ~20% padding above and ~5-10% sides, so reject
-                    # faces in the outer padding zone (they belong to neighbors).
-                    try:
-                        img_for_size = Image.open(io.BytesIO(face_image_for_detect))
-                        iw, ih = img_for_size.width, img_for_size.height
-                        # Define the "real person" zone: center 70% width, skip top 15%
-                        margin_x = iw * 0.15
-                        margin_top = ih * 0.05  # small top margin (hat pad is above person)
-                        margin_bot = ih * 0.05
+        async def get_face():
+            try:
+                resp = await client.post(
+                    f"{settings.AI_SERVICE_URL}/face/detect",
+                    files={"image": ("crop.jpg", contents, "image/jpeg")},
+                    timeout=10.0,
+                )
+                if resp.status_code == 200:
+                    return resp.json()
+            except Exception as e:
+                logger.warning("Face detection failed: %s", e)
+            return None
 
-                        valid_faces = []
-                        for f in faces:
-                            fb = f.get("face_bbox", {})
-                            fcx = fb.get("x", 0) + fb.get("w", 0) / 2
-                            fcy = fb.get("y", 0) + fb.get("h", 0) / 2
-                            # Face center must be within the center zone
-                            if margin_x < fcx < (iw - margin_x) and margin_top < fcy < (ih - margin_bot):
-                                valid_faces.append(f)
+        attrs_data, faces = await asyncio.gather(get_attributes(), get_face())
 
-                        if valid_faces:
-                            # Pick the largest face in the valid zone (most likely the subject)
-                            valid_faces.sort(key=lambda f: f.get("face_bbox", {}).get("w", 0) * f.get("face_bbox", {}).get("h", 0), reverse=True)
-                            results["face"] = valid_faces[0]
-                        else:
-                            logger.info("All detected faces are in padding zone — skipping")
-                    except Exception:
-                        results["face"] = faces[0]
-        except Exception as e:
-            logger.warning("Face detection failed: %s", e)
+        # Process attributes
+        if attrs_data:
+            upscaled_b64 = attrs_data.pop("upscaled_image_b64", None)
+            if upscaled_b64:
+                results["person_image_b64"] = upscaled_b64
+                upscaled_person_bytes = base64.b64decode(upscaled_b64)
+            results["description"] = attrs_data.get("description", "")
+            results["attributes"] = attrs_data.get("attributes", attrs_data)
+
+        # Process faces — filter to center zone
+        if faces:
+            try:
+                detect_img = upscaled_person_bytes if upscaled_person_bytes else contents
+                img_for_size = Image.open(io.BytesIO(detect_img))
+                iw, ih = img_for_size.width, img_for_size.height
+                margin_x = iw * 0.15
+                margin_top = ih * 0.05
+                margin_bot = ih * 0.05
+
+                # Scale face bbox from raw image to upscaled if needed
+                raw_img = Image.open(io.BytesIO(contents))
+                sx = iw / raw_img.width if upscaled_person_bytes else 1
+                sy = ih / raw_img.height if upscaled_person_bytes else 1
+
+                valid_faces = []
+                for f in faces:
+                    fb = f.get("face_bbox", {})
+                    fcx = (fb.get("x", 0) + fb.get("w", 0) / 2) * sx
+                    fcy = (fb.get("y", 0) + fb.get("h", 0) / 2) * sy
+                    if margin_x < fcx < (iw - margin_x) and margin_top < fcy < (ih - margin_bot):
+                        # Scale bbox to upscaled coordinates for face cropping
+                        f["face_bbox"] = {
+                            "x": fb["x"] * sx, "y": fb["y"] * sy,
+                            "w": fb["w"] * sx, "h": fb["h"] * sy,
+                        }
+                        valid_faces.append(f)
+
+                if valid_faces:
+                    valid_faces.sort(key=lambda f: f.get("face_bbox", {}).get("w", 0) * f.get("face_bbox", {}).get("h", 0), reverse=True)
+                    results["face"] = valid_faces[0]
+            except Exception:
+                results["face"] = faces[0]
 
         # 3. Crop face — BOTH original and enhanced versions
         if results["face"] and upscaled_person_bytes:

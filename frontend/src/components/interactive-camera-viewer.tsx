@@ -94,10 +94,13 @@ export function InteractiveCameraViewer({ camera, onClose, videoUrlOverride, vid
     form.append("image", blob, "frame.jpg");
     form.append("camera_id", camera.id);
 
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
     try {
       const resp = await fetch(`${API_URL}/api/video/detect-frame`, {
         method: "POST",
         body: form,
+        signal: controller.signal,
       });
       if (resp.ok) {
         const dets: Detection[] = await resp.json();
@@ -121,7 +124,11 @@ export function InteractiveCameraViewer({ camera, onClose, videoUrlOverride, vid
         setError(`Detection failed: ${resp.status}`);
       }
     } catch (e) {
-      setError(`Detection error: ${e}`);
+      if ((e as Error).name !== "AbortError") {
+        setError(`Detection error: ${e}`);
+      }
+    } finally {
+      clearTimeout(timeout);
     }
   }, [camera.id, captureFrame]);
 
@@ -133,7 +140,8 @@ export function InteractiveCameraViewer({ camera, onClose, videoUrlOverride, vid
     async function loop() {
       while (active) {
         await runDetection();
-        // No artificial delay — poll as fast as the round trip allows
+        // Small delay to avoid hammering tunnel on rapid errors
+        await new Promise(r => setTimeout(r, 300));
       }
     }
     loop();
