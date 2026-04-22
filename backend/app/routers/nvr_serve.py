@@ -1,4 +1,4 @@
-"""Serve NVR camera recording files from the camera_feeds directory."""
+"""Serve NVR camera recording files — 720p transcoded versions for streaming."""
 
 import re
 from pathlib import Path
@@ -10,7 +10,6 @@ from app.core.config import settings
 
 router = APIRouter(prefix="/video/nvr", tags=["nvr"])
 
-# Camera label mapping for NVR channel IDs
 NVR_CAMERA_NAMES = {
     "D01": "NVR Camera 1",
     "D03": "NVR Camera 3",
@@ -23,7 +22,10 @@ NVR_CAMERA_NAMES = {
 @router.get("/list")
 async def list_nvr_files():
     """List all available NVR recording files grouped by camera."""
+    # Check 720p dir first, fall back to original
     nvr_dir = Path(settings.NVR_VIDEO_DIR)
+    if not nvr_dir.exists():
+        nvr_dir = Path(settings.NVR_VIDEO_DIR_ORIGINAL)
     if not nvr_dir.exists():
         return {"cameras": {}, "files": []}
 
@@ -49,12 +51,15 @@ async def list_nvr_files():
 
 @router.get("/file/{filename}")
 async def get_nvr_file(filename: str):
-    """Serve an NVR video file for HTML5 playback."""
-    # Sanitize: only allow alphanumeric, underscore, dash, dot
+    """Serve NVR video — 720p version for streaming, fallback to original."""
     if not re.match(r"^[\w\-\.]+$", filename):
         raise HTTPException(400, "Invalid filename")
 
+    # Try 720p first (small, fast streaming)
     video_path = Path(settings.NVR_VIDEO_DIR) / filename
+    if not video_path.exists():
+        # Fall back to original 4K
+        video_path = Path(settings.NVR_VIDEO_DIR_ORIGINAL) / filename
     if not video_path.exists():
         raise HTTPException(404, f"NVR file not found: {filename}")
 
