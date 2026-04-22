@@ -135,7 +135,7 @@ export default function SearchPage() {
 
   // Detail modal state
   const [detailResult, setDetailResult] = useState<SearchResult | null>(null);
-  const [detailViewMode, setDetailViewMode] = useState<"crop" | "full">("crop");
+  const [detailViewMode, setDetailViewMode] = useState<"crop" | "full" | "video">("crop");
   const [detailFullFrameUrl, setDetailFullFrameUrl] = useState<string | null>(null);
   const [detailCropUrl, setDetailCropUrl] = useState<string | null>(null);
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
@@ -698,122 +698,119 @@ export default function SearchPage() {
           </div>
         </div>
       )}
-      {/* Detail modal — full 4K image + sidebar with all info */}
-      {detailResult && (
+      {/* Detail modal — video clip + sidebar with all info */}
+      {detailResult && (() => {
+        const a = detailResult.attributes ?? {};
+        const HIDE = new Set(["thumbnail_b64", "bbox", "similarity", "track_id"]);
+        const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+        const videoFile = a.video_file as string;
+        const startSec = (a.start_sec as number) ?? 0;
+        const endSec = (a.end_sec as number) ?? 0;
+        const hasVideo = !!videoFile && endSec > startSec;
+
+        // Flatten nested attributes object
+        const flatAttrs: [string, string][] = [];
+        for (const [k, v] of Object.entries(a)) {
+          if (HIDE.has(k) || v == null || v === "" || v === "unknown") continue;
+          if (k === "attributes" && typeof v === "object") {
+            for (const [ak, av] of Object.entries(v as Record<string, unknown>)) {
+              if (av != null && av !== "" && av !== "unknown")
+                flatAttrs.push([ak, String(av)]);
+            }
+          } else if (typeof v === "object") {
+            continue; // skip bbox etc
+          } else {
+            flatAttrs.push([k, typeof v === "number"
+              ? (k.includes("confidence") ? `${(v * 100).toFixed(0)}%` : String(v))
+              : String(v)]);
+          }
+        }
+
+        return (
         <div className="fixed inset-0 z-[9999] flex bg-black/90" onClick={() => setDetailResult(null)}>
-          {/* Image area */}
-          <div className="flex-1 flex items-center justify-center p-4 relative" onClick={(e) => e.stopPropagation()}>
-            {detailViewMode === "full" && detailFullFrameUrl && (
-              <div className="absolute top-4 left-4 z-10 rounded-sm bg-black/70 px-3 py-1 font-data text-[10px] text-[#00ff88]">
-                4K FULL FRAME — loading may take a few seconds
-              </div>
-            )}
-            <img
-              key={detailViewMode}
-              src={detailViewMode === "crop" ? (detailCropUrl ?? detailResult.thumbnail_url ?? "") : (detailFullFrameUrl ?? "")}
-              alt="Detail"
-              className="max-w-full max-h-full object-contain rounded-sm"
-              onError={(e) => {
-                // If full frame fails, fall back to crop
-                if (detailViewMode === "full" && detailResult.thumbnail_url) {
-                  (e.target as HTMLImageElement).src = detailResult.thumbnail_url;
-                }
-              }}
-            />
+          {/* Left: image/video area */}
+          <div className="flex-1 flex flex-col min-w-0" onClick={(e) => e.stopPropagation()}>
+            {/* View toggle bar */}
+            <div className="flex h-10 shrink-0 items-center gap-2 border-b border-[#00f0ff]/15 bg-[#020a18] px-3">
+              {["crop", "full", ...(hasVideo ? ["video"] : [])].map((mode) => (
+                <button key={mode} onClick={() => setDetailViewMode(mode as "crop" | "full")}
+                  className={`rounded-sm border px-3 py-1 font-heading text-[9px] uppercase tracking-wider transition-colors ${
+                    detailViewMode === mode ? "border-[#00f0ff]/40 bg-[#00f0ff]/15 text-[#00f0ff]" : "border-white/10 text-[#4a6a8a] hover:text-white"
+                  }`}>
+                  {mode === "crop" ? "VEHICLE CROP" : mode === "full" ? "4K FULL FRAME" : "VIDEO CLIP"}
+                </button>
+              ))}
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 flex items-center justify-center p-4 bg-black">
+              {detailViewMode === "video" && hasVideo ? (
+                <video
+                  src={`${API}/api/video/nvr/file/${videoFile}#t=${startSec},${endSec}`}
+                  crossOrigin="anonymous"
+                  controls
+                  autoPlay
+                  loop
+                  muted
+                  className="max-w-full max-h-full object-contain rounded-sm"
+                />
+              ) : (
+                <img
+                  key={detailViewMode}
+                  src={detailViewMode === "crop" ? (detailCropUrl ?? detailResult.thumbnail_url ?? "") : (detailFullFrameUrl ?? "")}
+                  alt="Detail"
+                  className="max-w-full max-h-full object-contain rounded-sm"
+                  onError={(e) => {
+                    if (detailViewMode === "full" && detailResult.thumbnail_url)
+                      (e.target as HTMLImageElement).src = detailResult.thumbnail_url;
+                  }}
+                />
+              )}
+            </div>
           </div>
 
-          {/* Right sidebar */}
-          <div className="w-[380px] shrink-0 border-l border-[#00f0ff]/15 bg-[#020a18] overflow-y-auto p-4 space-y-4" onClick={(e) => e.stopPropagation()}>
-            {/* Close */}
-            <div className="flex items-center justify-between">
-              <h3 className="font-heading text-xs uppercase tracking-widest text-[#00f0ff]">DETAIL VIEW</h3>
-              <button onClick={() => setDetailResult(null)} className="text-[#4a6a8a] hover:text-white font-heading text-xs">CLOSE</button>
+          {/* Right sidebar — property:value table */}
+          <div className="w-[400px] shrink-0 border-l border-[#00f0ff]/15 bg-[#020a18] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-[#00f0ff]/15 px-4 py-3">
+              <h3 className="font-heading text-xs uppercase tracking-widest text-[#00f0ff]">VEHICLE DETAIL</h3>
+              <button onClick={() => setDetailResult(null)} className="rounded-sm border border-[#ff2d78]/30 bg-[#ff2d78]/10 px-2 py-1 text-[#ff2d78] font-heading text-[9px] hover:bg-[#ff2d78]/20">CLOSE</button>
             </div>
 
-            {/* View toggle */}
-            <div className="flex gap-2">
-              <button
-                onClick={() => setDetailViewMode("crop")}
-                className={`flex-1 rounded-sm border py-1.5 font-heading text-[9px] uppercase tracking-wider transition-colors ${
-                  detailViewMode === "crop" ? "border-[#00f0ff]/40 bg-[#00f0ff]/15 text-[#00f0ff]" : "border-white/10 text-[#4a6a8a] hover:text-white"
-                }`}
-              >
-                VEHICLE CROP
-              </button>
-              <button
-                onClick={() => setDetailViewMode("full")}
-                className={`flex-1 rounded-sm border py-1.5 font-heading text-[9px] uppercase tracking-wider transition-colors ${
-                  detailViewMode === "full" ? "border-[#00ff88]/40 bg-[#00ff88]/15 text-[#00ff88]" : "border-white/10 text-[#4a6a8a] hover:text-white"
-                }`}
-              >
-                FULL FRAME
-              </button>
-            </div>
-
-            {/* Badge */}
-            {renderObjectTypeBadge(detailResult.object_type)}
-
-            {/* Confidence */}
-            <div className="rounded-sm border border-white/5 bg-white/[0.02] px-3 py-2">
-              <span className="font-heading text-[7px] uppercase tracking-[0.2em] text-[#4a6a8a]">MATCH CONFIDENCE</span>
-              <p className="font-data text-lg text-[#00ff88]">{(detailResult.confidence * 100).toFixed(0)}%</p>
-            </div>
-
-            {/* Camera info */}
-            <div className="space-y-1">
-              <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#00f0ff]">SOURCE</h4>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="rounded-sm border border-white/5 bg-white/[0.02] px-2.5 py-1.5">
-                  <span className="font-heading text-[7px] uppercase tracking-[0.2em] text-[#4a6a8a]">CAMERA</span>
-                  <p className="font-data text-[11px] text-[#e0f0ff] truncate">{detailResult.camera_name}</p>
-                </div>
-                <div className="rounded-sm border border-white/5 bg-white/[0.02] px-2.5 py-1.5">
-                  <span className="font-heading text-[7px] uppercase tracking-[0.2em] text-[#4a6a8a]">TIME</span>
-                  <p className="font-data text-[11px] text-[#e0f0ff]">{(detailResult.attributes?.timestamp as string) ?? "N/A"}</p>
-                </div>
+            {/* Description */}
+            {(a.description as string) && (
+              <div className="border-b border-white/5 px-4 py-3">
+                <p className="font-data text-[12px] leading-relaxed text-slate-300">{String(a.description ?? "")}</p>
               </div>
-            </div>
+            )}
 
-            {/* All attributes — show everything Qwen returned */}
-            <div className="space-y-1">
-              <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#00f0ff]">ATTRIBUTES</h4>
-              <div className="grid grid-cols-2 gap-2">
-                {detailResult.attributes && Object.entries(detailResult.attributes)
-                  .filter(([k]) => !["thumbnail_b64", "bbox", "similarity"].includes(k))
-                  .map(([key, val]) => {
-                    if (val == null || val === "" || val === "unknown" || val === "not specified") return null;
-                    const label = key.replace(/_/g, " ").toUpperCase();
-                    let display: string;
-                    if (typeof val === "object") display = JSON.stringify(val);
-                    else if (typeof val === "number") display = key.includes("confidence") || key.includes("similarity") ? `${(val * 100).toFixed(0)}%` : String(val);
-                    else display = String(val);
-                    return (
-                      <div key={key} className="rounded-sm border border-white/5 bg-white/[0.02] px-2.5 py-1.5">
-                        <span className="font-heading text-[7px] uppercase tracking-[0.2em] text-[#4a6a8a]">{label}</span>
-                        <p className="font-data text-[11px] text-[#e0f0ff] truncate">{display}</p>
-                      </div>
-                    );
-                  }).filter(Boolean)}
-              </div>
+            {/* All attributes as property:value rows */}
+            <div className="divide-y divide-white/5">
+              {flatAttrs.map(([key, val]) => (
+                <div key={key} className="flex items-start px-4 py-2">
+                  <span className="w-[140px] shrink-0 font-heading text-[8px] uppercase tracking-[0.15em] text-[#4a6a8a] pt-0.5">
+                    {key.replace(/_/g, " ")}
+                  </span>
+                  <span className="flex-1 font-data text-[12px] text-[#e0f0ff] break-words">
+                    {val}
+                  </span>
+                </div>
+              ))}
             </div>
 
             {/* Actions */}
-            <div className="space-y-2 pt-2">
+            <div className="p-4 space-y-2 border-t border-white/5">
               <button
-                onClick={() => {
-                  // Trigger reverse search with this vehicle's thumbnail
-                  if (detailResult.thumbnail_url) {
-                    setExpandedImage(detailResult.thumbnail_url);
-                  }
-                }}
-                className="w-full rounded-sm border border-[#ff2d78]/30 bg-[#ff2d78]/10 py-2 font-heading text-[9px] uppercase tracking-wider text-[#ff2d78] hover:bg-[#ff2d78]/20"
+                onClick={() => { setDetailResult(null); /* TODO: trigger reverse search */ }}
+                className="w-full rounded-sm border border-[#ff2d78]/30 bg-[#ff2d78]/10 py-2.5 font-heading text-[9px] uppercase tracking-wider text-[#ff2d78] hover:bg-[#ff2d78]/20"
               >
                 FIND SIMILAR VEHICLES
               </button>
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
     </motion.div>
   );
 }
