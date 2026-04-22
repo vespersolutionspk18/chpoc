@@ -160,8 +160,33 @@ async def search_face_by_image(image: UploadFile = File(...), top_k: int = Form(
 # Index builder — processes all videos and extracts face embeddings
 # ---------------------------------------------------------------------------
 
-VIDEO_DIR = "/workspace/safe-city/test-data/pakistani"
+VIDEO_DIRS = [
+    "/workspace/safe-city/test-data/pakistani",
+    "/root/camera_feeds/mp4",
+]
 
+# All videos across all directories — auto-discovered
+def _discover_videos() -> list[tuple[str, str]]:
+    """Find all MP4 files across video directories. Returns [(camera_id, full_path)]."""
+    import glob
+    videos = []
+    seen = set()
+    for vdir in VIDEO_DIRS:
+        for path in sorted(glob.glob(f"{vdir}/*.mp4")):
+            fname = Path(path).name
+            # Skip duplicates (same filename in different dirs)
+            if fname in seen:
+                continue
+            # Skip non-h264 originals (use h264 versions if available)
+            if ".f399." in fname or ".f137." in fname or ".f299." in fname or ".f140." in fname:
+                continue
+            seen.add(fname)
+            # Generate camera ID from filename
+            cam_id = fname.replace(".mp4", "")[:36]
+            videos.append((cam_id, path))
+    return videos
+
+# Legacy map for face index (still uses old camera UUIDs)
 VIDEO_MAP = {
     "00000000-0000-4000-8000-000000000001": "clip_peshawar_streets.mp4",
     "00000000-0000-4000-8000-000000000002": "clip_peshawar_bazaar.mp4",
@@ -169,6 +194,7 @@ VIDEO_MAP = {
     "00000000-0000-4000-8000-000000000004": "clip_peshawar_walking.mp4",
     "00000000-0000-4000-8000-000000000005": "clip_rawalpindi_streets.mp4",
 }
+VIDEO_DIR = "/workspace/safe-city/test-data/pakistani"
 
 
 @router.post("/index/build")
@@ -338,29 +364,65 @@ _VEHICLE_COCO = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
 
 
 @router.post("/vehicle-index/build")
-async def build_vehicle_index(frame_skip: int = Form(10)):
-    """Process ALL videos, extract CLIP embeddings for every vehicle detection."""
+async def build_vehicle_index(frame_skip: int = Form(15)):
+    """Process ALL videos (test clips + NVR), CLIP-classify every vehicle."""
     from ai.app.services.vehicle_index import vehicle_index
-
-    # Load YOLO for detection
+    import clip as clip_module
+    import torch
+    from PIL import Image as PILImage
     from ultralytics import YOLO
+
     yolo = YOLO("yolov8x.pt")
+    model_c, preprocess_c = _get_clip()
+    device_c = next(model_c.parameters()).device
+
+    # Pre-tokenize classification prompts (do ONCE, not per vehicle)
+    type_labels = [
+        "a sedan car on the road", "a large SUV", "a small hatchback car",
+        "a pickup truck", "a van or minivan", "a large bus",
+        "a heavy truck or lorry", "a motorcycle or motorbike",
+        "a three-wheeled auto-rickshaw or tuk-tuk", "a station wagon",
+    ]
+    type_names = ["sedan", "SUV", "hatchback", "pickup", "van", "bus",
+                  "truck", "motorcycle", "auto-rickshaw", "wagon"]
+    type_tokens = clip_module.tokenize(type_labels).to(device_c)
+    with torch.no_grad():
+        type_text_features = model_c.encode_text(type_tokens)
+        type_text_features = type_text_features / type_text_features.norm(dim=-1, keepdim=True)
+
+    color_labels = [
+        "a red colored vehicle", "a blue colored vehicle", "a black colored vehicle",
+        "a white colored vehicle", "a green colored vehicle", "a grey colored vehicle",
+        "a brown colored vehicle", "a yellow colored vehicle", "a orange colored vehicle",
+        "a silver colored vehicle",
+    ]
+    color_names = ["red", "blue", "black", "white", "green", "grey",
+                   "brown", "yellow", "orange", "silver"]
+    color_tokens = clip_module.tokenize(color_labels).to(device_c)
+    with torch.no_grad():
+        color_text_features = model_c.encode_text(color_tokens)
+        color_text_features = color_text_features / color_text_features.norm(dim=-1, keepdim=True)
+
+    # Reset index
+    vehicle_index.embeddings = None
+    vehicle_index.metadata = []
 
     t0 = time.perf_counter()
     total_vehicles = 0
     total_frames = 0
 
-    for camera_id, filename in VIDEO_MAP.items():
-        video_path = Path(VIDEO_DIR) / filename
-        if not video_path.exists():
-            continue
+    # Discover ALL videos
+    all_videos = _discover_videos()
+    logger.info("Found %d videos to index", len(all_videos))
 
-        cap = cv2.VideoCapture(str(video_path))
+    for cam_id, video_path in all_videos:
+        cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS) or 25
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         frame_num = 0
+        video_name = Path(video_path).name
 
-        logger.info("Vehicle indexing %s (%d frames)...", filename, frame_count)
+        logger.info("Vehicle indexing %s (%d frames, skip=%d)...", video_name, frame_count, frame_skip)
 
         while True:
             ret, frame = cap.read()
@@ -382,70 +444,58 @@ async def build_vehicle_index(frame_skip: int = Form(10)):
                         continue
 
                     x1, y1, x2, y2 = [int(v) for v in r.boxes.xyxy[i].tolist()]
-                    x1, y1 = max(0, x1), max(0, y1)
-                    x2, y2 = min(frame.shape[1], x2), min(frame.shape[0], y2)
-                    if x2 <= x1 or y2 <= y1:
-                        continue
+                    h_frame, w_frame = frame.shape[:2]
+
+                    # Pad 15% around bbox for full vehicle visibility
+                    bw, bh = x2 - x1, y2 - y1
+                    pad = int(max(bw, bh) * 0.15)
+                    x1 = max(0, x1 - pad)
+                    y1 = max(0, y1 - pad)
+                    x2 = min(w_frame, x2 + pad)
+                    y2 = min(h_frame, y2 + pad)
 
                     crop = frame[y1:y2, x1:x2]
                     if crop.size == 0:
                         continue
 
                     # CLIP embedding
-                    emb = _clip_embed_image(crop)
-
-                    # Thumbnail
-                    thumb = cv2.resize(crop, (80, 60))
-                    _, buf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 70])
-                    thumb_b64 = base64.b64encode(buf.tobytes()).decode("ascii")
-
-                    # CLIP zero-shot for vehicle type + color (proper classification)
-                    from PIL import Image as PILImage
-                    import clip as clip_module
-                    import torch
-
                     pil_crop = PILImage.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
-                    model_c, preprocess_c = _get_clip()
-                    device_c = next(model_c.parameters()).device
-
-                    # Vehicle type classification
-                    type_labels = ["sedan car", "SUV", "hatchback car", "pickup truck", "van",
-                                   "bus", "truck", "motorcycle", "three-wheeled auto-rickshaw",
-                                   "minivan", "wagon"]
-                    type_names = ["sedan", "SUV", "hatchback", "pickup", "van",
-                                  "bus", "truck", "motorcycle", "auto-rickshaw",
-                                  "minivan", "wagon"]
-                    type_tokens = clip_module.tokenize(type_labels).to(device_c)
                     img_input = preprocess_c(pil_crop).unsqueeze(0).to(device_c)
                     with torch.no_grad():
                         img_f = model_c.encode_image(img_input)
-                        txt_f = model_c.encode_text(type_tokens)
                         img_f = img_f / img_f.norm(dim=-1, keepdim=True)
-                        txt_f = txt_f / txt_f.norm(dim=-1, keepdim=True)
-                        type_sims = (100.0 * img_f @ txt_f.T).softmax(dim=-1)[0].cpu().tolist()
-                    best_type = type_names[type_sims.index(max(type_sims))]
+                        emb = img_f[0].cpu().tolist()
 
-                    # Color classification
-                    color_labels = ["red vehicle", "blue vehicle", "black vehicle", "white vehicle",
-                                    "green vehicle", "grey vehicle", "brown vehicle", "yellow vehicle",
-                                    "orange vehicle", "silver vehicle", "beige vehicle"]
-                    color_names = ["red", "blue", "black", "white", "green", "grey",
-                                   "brown", "yellow", "orange", "silver", "beige"]
-                    color_tokens = clip_module.tokenize(color_labels).to(device_c)
-                    with torch.no_grad():
-                        txt_f2 = model_c.encode_text(color_tokens)
-                        txt_f2 = txt_f2 / txt_f2.norm(dim=-1, keepdim=True)
-                        color_sims = (100.0 * img_f @ txt_f2.T).softmax(dim=-1)[0].cpu().tolist()
-                    best_color = color_names[color_sims.index(max(color_sims))]
+                        # Type classification
+                        type_sims = (100.0 * img_f @ type_text_features.T).softmax(dim=-1)[0].cpu().tolist()
+                        best_type_idx = type_sims.index(max(type_sims))
+                        best_type = type_names[best_type_idx]
+                        best_type_conf = type_sims[best_type_idx]
+
+                        # Color classification
+                        color_sims = (100.0 * img_f @ color_text_features.T).softmax(dim=-1)[0].cpu().tolist()
+                        best_color_idx = color_sims.index(max(color_sims))
+                        best_color = color_names[best_color_idx]
+
+                    # Full quality thumbnail (max 320px wide, quality 85)
+                    th, tw = crop.shape[:2]
+                    if tw > 320:
+                        scale = 320 / tw
+                        thumb = cv2.resize(crop, (320, int(th * scale)), interpolation=cv2.INTER_AREA)
+                    else:
+                        thumb = crop
+                    _, buf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    thumb_b64 = base64.b64encode(buf.tobytes()).decode("ascii")
 
                     vehicle_index.add(
                         embedding=emb,
                         meta={
-                            "camera_id": camera_id,
-                            "video_file": filename,
+                            "camera_id": cam_id,
+                            "video_file": video_name,
                             "frame_num": frame_num,
                             "timestamp_sec": round(frame_num / fps, 2),
                             "vehicle_class": best_type,
+                            "type_confidence": round(best_type_conf, 3),
                             "dominant_color": best_color,
                             "yolo_class": _VEHICLE_COCO[cls_id],
                             "bbox": {"x": x1, "y": y1, "w": x2-x1, "h": y2-y1},
@@ -457,7 +507,7 @@ async def build_vehicle_index(frame_skip: int = Form(10)):
             frame_num += 1
 
         cap.release()
-        logger.info("  %s: done", filename)
+        logger.info("  %s: %d vehicles indexed", video_name, total_vehicles)
 
     vehicle_index.save()
     elapsed = time.perf_counter() - t0
@@ -467,6 +517,7 @@ async def build_vehicle_index(frame_skip: int = Form(10)):
         "total_frames_processed": total_frames,
         "elapsed_seconds": round(elapsed, 1),
         "index_size": vehicle_index.size,
+        "videos_processed": len(all_videos),
     }
 
 
