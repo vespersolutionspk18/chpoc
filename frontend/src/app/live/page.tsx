@@ -240,7 +240,11 @@ export default function LiveViewPage() {
                 <CameraFeedCard
                   camera={camera}
                   detections={detections.length > 0 ? detections : undefined}
-                  onClick={(cam) => { setFullscreenVideoUrl(undefined); setFullscreenCamera(cam); }}
+                  onClick={(cam) => {
+                    setFullscreenVideoUrl(undefined);
+                    setFullscreenVideoUrlHq(`${API_URL}/api/video/file-hq/${cam.id}`);
+                    setFullscreenCamera(cam);
+                  }}
                 />
                 {/* Active indicator overlay */}
                 {active && (

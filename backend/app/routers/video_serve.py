@@ -71,6 +71,39 @@ async def get_video_file(camera_id: str):
     )
 
 
+@router.get("/file-hq/{camera_id}")
+async def get_video_file_hq(camera_id: str):
+    """Serve the ORIGINAL 4K video file for AI analysis (not the 720p stream)."""
+    # Try NVR 4K original first
+    from pathlib import Path as P
+    nvr_file = _get_latest_nvr(camera_id)
+    if nvr_file and nvr_file.exists():
+        # Return the ORIGINAL 4K, not the 720p
+        original = Path("/root/camera_feeds/mp4") / nvr_file.name
+        if original.exists():
+            video_path = original
+        else:
+            video_path = nvr_file
+    else:
+        video_name = VIDEO_MAP.get(camera_id)
+        if not video_name:
+            raise HTTPException(404, "No video for this camera")
+        video_path = Path(settings.VIDEO_DIR) / video_name
+        if not video_path.exists():
+            raise HTTPException(404, f"Video not found: {video_name}")
+
+    return FileResponse(
+        str(video_path),
+        media_type="video/mp4",
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Range",
+            "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, Content-Length",
+        },
+    )
+
+
 @router.post("/detect-frame")
 async def detect_frame(
     image: UploadFile = File(...),

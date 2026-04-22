@@ -240,24 +240,34 @@ export function InteractiveCameraViewer({ camera, onClose, videoUrlOverride, vid
     setAnalyzing(true);
     setAnalysis(null);
 
-    // Capture and crop — use HQ (4K) video if available, otherwise visible video
+    // Capture and crop — ALWAYS use 4K source for AI analysis
     const canvas = canvasRef.current;
     const visibleVideo = videoRef.current;
     if (!canvas || !visibleVideo) { setAnalyzing(false); return; }
 
-    // Try to use 4K source for AI analysis
     let captureVideo: HTMLVideoElement = visibleVideo;
     const hqV = hqVideoRef.current;
-    if (hqV && hqV.readyState >= 2) {
-      // Seek HQ video to same position as visible video
+    if (hqV) {
+      // Wait for 4K video to be ready (don't fall back to 720p)
+      if (hqV.readyState < 2) {
+        // Force load and wait
+        await new Promise<void>((resolve) => {
+          const onReady = () => { hqV.removeEventListener("canplay", onReady); resolve(); };
+          hqV.addEventListener("canplay", onReady);
+          hqV.load();
+          setTimeout(resolve, 10000); // 10s max wait
+        });
+      }
+      // Seek to same timestamp
       hqV.currentTime = visibleVideo.currentTime;
-      // Wait for seek
       await new Promise<void>((resolve) => {
         const onSeeked = () => { hqV.removeEventListener("seeked", onSeeked); resolve(); };
         hqV.addEventListener("seeked", onSeeked);
-        setTimeout(resolve, 2000); // timeout fallback
+        setTimeout(resolve, 5000);
       });
-      captureVideo = hqV;
+      if (hqV.readyState >= 2) {
+        captureVideo = hqV;
+      }
     }
 
     const ctx = canvas.getContext("2d");
