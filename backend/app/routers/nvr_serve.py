@@ -73,3 +73,25 @@ async def get_nvr_file(filename: str):
             "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, Content-Length",
         },
     )
+
+
+@router.get("/file-hq/{filename}")
+async def get_nvr_file_hq(filename: str):
+    """Serve the ORIGINAL 4K NVR file (used by AI for high-res frame capture)."""
+    if not re.match(r"^[\w\-\.]+$", filename):
+        raise HTTPException(400, "Invalid filename")
+
+    video_path = Path(settings.NVR_VIDEO_DIR_ORIGINAL) / filename
+    if not video_path.exists():
+        raise HTTPException(404, f"NVR HQ file not found: {filename}")
+
+    return FileResponse(
+        str(video_path),
+        media_type="video/mp4",
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Range",
+            "Access-Control-Expose-Headers": "Content-Range, Accept-Ranges, Content-Length",
+        },
+    )

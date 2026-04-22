@@ -41,10 +41,12 @@ interface Props {
   camera: Camera;
   onClose: () => void;
   videoUrlOverride?: string;
+  videoUrlHq?: string;  // 4K original for AI analysis (hidden, not displayed)
 }
 
-export function InteractiveCameraViewer({ camera, onClose, videoUrlOverride }: Props) {
+export function InteractiveCameraViewer({ camera, onClose, videoUrlOverride, videoUrlHq }: Props) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const hqVideoRef = useRef<HTMLVideoElement>(null);  // hidden 4K video for AI capture
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [paused, setPaused] = useState(false);
   const [detections, setDetections] = useState<Detection[]>([]);
@@ -230,18 +232,39 @@ export function InteractiveCameraViewer({ camera, onClose, videoUrlOverride }: P
     setAnalyzing(true);
     setAnalysis(null);
 
-    // Capture and crop
+    // Capture and crop — use HQ (4K) video if available, otherwise visible video
     const canvas = canvasRef.current;
-    const video = videoRef.current;
-    if (!canvas || !video) { setAnalyzing(false); return; }
+    const visibleVideo = videoRef.current;
+    if (!canvas || !visibleVideo) { setAnalyzing(false); return; }
+
+    // Try to use 4K source for AI analysis
+    let captureVideo: HTMLVideoElement = visibleVideo;
+    const hqV = hqVideoRef.current;
+    if (hqV && hqV.readyState >= 2) {
+      // Seek HQ video to same position as visible video
+      hqV.currentTime = visibleVideo.currentTime;
+      // Wait for seek
+      await new Promise<void>((resolve) => {
+        const onSeeked = () => { hqV.removeEventListener("seeked", onSeeked); resolve(); };
+        hqV.addEventListener("seeked", onSeeked);
+        setTimeout(resolve, 2000); // timeout fallback
+      });
+      captureVideo = hqV;
+    }
 
     const ctx = canvas.getContext("2d");
     if (!ctx) { setAnalyzing(false); return; }
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    ctx.drawImage(video, 0, 0);
+    canvas.width = captureVideo.videoWidth;
+    canvas.height = captureVideo.videoHeight;
+    ctx.drawImage(captureVideo, 0, 0);
+
+    // Detection bbox is relative to the VISIBLE video resolution
+    // Scale to capture video resolution if different
+    const scaleX = captureVideo.videoWidth / visibleVideo.videoWidth;
+    const scaleY = captureVideo.videoHeight / visibleVideo.videoHeight;
 
     let { x: cx, y: cy, w: cw, h: ch } = det.bbox;
+    cx *= scaleX; cy *= scaleY; cw *= scaleX; ch *= scaleY;
 
     // For persons: pad 20% above (hats) and 5% sides; for vehicles: pad 10% all sides (plates)
     if (det.object_class === "person") {
@@ -347,6 +370,18 @@ export function InteractiveCameraViewer({ camera, onClose, videoUrlOverride }: P
             className="absolute inset-0 w-full h-full object-contain"
           />
           <canvas ref={canvasRef} className="hidden" />
+          {/* Hidden 4K video for AI frame capture (not displayed) */}
+          {videoUrlHq && (
+            <video
+              ref={hqVideoRef}
+              src={videoUrlHq}
+              crossOrigin="anonymous"
+              muted
+              playsInline
+              preload="auto"
+              className="hidden"
+            />
+          )}
 
           {/* Detection boxes — clickable */}
           {detections.length > 0 && (

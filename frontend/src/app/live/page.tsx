@@ -49,6 +49,7 @@ export default function LiveViewPage() {
   const [gridLayout, setGridLayout] = useState<GridLayout>("2x2");
   const [fullscreenCamera, setFullscreenCamera] = useState<Camera | null>(null);
   const [fullscreenVideoUrl, setFullscreenVideoUrl] = useState<string | undefined>(undefined);
+  const [fullscreenVideoUrlHq, setFullscreenVideoUrlHq] = useState<string | undefined>(undefined);
   const [cameras, setCameras] = useState<Camera[]>([]);
   const [frameData, setFrameData] = useState<Record<string, FrameData>>({});
   const [pipelineRunning, setPipelineRunning] = useState(false);
@@ -287,6 +288,7 @@ export default function LiveViewPage() {
                       updated_at: "",
                     };
                     setFullscreenVideoUrl(`${API_URL}/api/video/nvr/file/${nvr.filename}`);
+                    setFullscreenVideoUrlHq(`${API_URL}/api/video/nvr/file-hq/${nvr.filename}`);
                     setFullscreenCamera(pseudoCamera);
                   }}
                   className="group relative w-full overflow-hidden rounded-sm bg-gradient-to-br from-[#0a1525] to-[#060d1a] border border-[#ff8800]/10 transition-all duration-200 hover:border-[#ff8800]/40 hover:shadow-[0_0_20px_#ff880015] cursor-pointer"
@@ -342,8 +344,9 @@ export default function LiveViewPage() {
         {fullscreenCamera && (
           <InteractiveCameraViewer
             camera={fullscreenCamera}
-            onClose={() => { setFullscreenCamera(null); setFullscreenVideoUrl(undefined); }}
+            onClose={() => { setFullscreenCamera(null); setFullscreenVideoUrl(undefined); setFullscreenVideoUrlHq(undefined); }}
             videoUrlOverride={fullscreenVideoUrl}
+            videoUrlHq={fullscreenVideoUrlHq}
           />
         )}
       </AnimatePresence>
