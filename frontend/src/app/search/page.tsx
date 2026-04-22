@@ -130,6 +130,9 @@ export default function SearchPage() {
   const [vehicleFile, setVehicleFile] = useState<File | null>(null);
   const [vehiclePreview, setVehiclePreview] = useState<string | null>(null);
 
+  // Alert search state
+  const [selectedAlerts, setSelectedAlerts] = useState<Set<string>>(new Set());
+
   // Detail modal state
   const [detailResult, setDetailResult] = useState<SearchResult | null>(null);
   const [detailViewMode, setDetailViewMode] = useState<"crop" | "full">("crop");
@@ -344,14 +347,19 @@ export default function SearchPage() {
 
   function renderAttributes(attrs: Record<string, unknown> | null) {
     if (!attrs) return null;
+    const HIDE = ["thumbnail_b64", "bbox", "similarity", "frame_num"];
+    const filtered = Object.entries(attrs).filter(([k, v]) =>
+      !HIDE.includes(k) && v != null && v !== "" && v !== "unknown" && typeof v !== "object"
+    );
+    if (filtered.length === 0) return null;
     return (
       <div className="flex flex-wrap gap-1 mt-2">
-        {Object.entries(attrs).map(([key, val]) => (
+        {filtered.map(([key, val]) => (
           <span
             key={key}
             className="rounded-sm bg-white/5 px-1.5 py-0.5 font-data text-[10px] text-[#4a6a8a]"
           >
-            {key}: {String(val)}
+            {key.replace(/_/g, " ")}: {typeof val === "number" && key.includes("confidence") ? `${(val * 100).toFixed(0)}%` : String(val)}
           </span>
         ))}
       </div>
@@ -521,7 +529,7 @@ export default function SearchPage() {
         {/* ─── Alert Search ─── */}
         <TabsContent value={4} className="space-y-4 pt-4">
           <p className="font-data text-xs text-[#4a6a8a]">
-            Scan video frames for traffic violations and safety alerts using AI vision analysis.
+            Select violations to scan for, then click SCAN to analyze video frames with AI.
           </p>
           <div className="grid grid-cols-2 gap-3 max-w-2xl lg:grid-cols-3">
             {[
@@ -529,47 +537,75 @@ export default function SearchPage() {
               { id: "no_helmet", label: "NO HELMET", desc: "Bike rider without helmet", color: "#ff8800" },
               { id: "wrong_way", label: "WRONG WAY", desc: "Vehicle going wrong direction", color: "#ff2d78" },
               { id: "no_seatbelt", label: "NO SEATBELT", desc: "Driver without seatbelt", color: "#ffaa00" },
-              { id: "overloaded", label: "OVERLOADED", desc: "Vehicle carrying excess passengers/load", color: "#ff8800" },
+              { id: "overloaded", label: "OVERLOADED", desc: "Excess passengers/load", color: "#ff8800" },
               { id: "phone_usage", label: "PHONE USAGE", desc: "Driver using mobile phone", color: "#ffaa00" },
-            ].map((alert) => (
-              <button
-                key={alert.id}
-                disabled={searching}
-                onClick={async () => {
-                  setSearching(true);
-                  setHasSearched(true);
-                  try {
-                    const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-                    const resp = await fetch(`${API}/api/video/alert-search`, {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ alert_type: alert.id, video_file: "D01_20260420124029.mp4", frame_skip: 30 }),
-                    });
-                    if (resp.ok) {
-                      const data = await resp.json();
-                      const mapped = (data.detections ?? []).map((d: Record<string, unknown>, i: number) => ({
-                        track_id: `alert-${i}`,
-                        camera_id: (d.camera_id as string) ?? "D01",
-                        camera_name: (d.video_file as string) ?? "",
-                        timestamp: new Date(((d.timestamp_sec as number) ?? 0) * 1000).toISOString(),
-                        object_type: "vehicle",
-                        confidence: (d.confidence as number) ?? 0,
-                        thumbnail_url: d.thumbnail_b64 ? `data:image/jpeg;base64,${d.thumbnail_b64}` : null,
-                        attributes: { ...d, thumbnail_b64: undefined },
-                      }));
-                      setResults(mapped);
-                    }
-                  } catch { /* keep */ } finally { setSearching(false); }
-                }}
-                className="flex flex-col items-start gap-1 rounded-sm border p-3 transition-all hover:shadow-lg disabled:opacity-50"
-                style={{ borderColor: `${alert.color}30`, background: `${alert.color}08` }}
-              >
-                <span className="font-heading text-[10px] uppercase tracking-wider" style={{ color: alert.color }}>{alert.label}</span>
-                <span className="font-data text-[9px] text-[#4a6a8a]">{alert.desc}</span>
-              </button>
-            ))}
+            ].map((alert) => {
+              const active = selectedAlerts.has(alert.id);
+              return (
+                <button
+                  key={alert.id}
+                  onClick={() => {
+                    const next = new Set(selectedAlerts);
+                    if (active) next.delete(alert.id); else next.add(alert.id);
+                    setSelectedAlerts(next);
+                  }}
+                  className="flex flex-col items-start gap-1 rounded-sm border p-3 transition-all"
+                  style={{
+                    borderColor: active ? `${alert.color}80` : `${alert.color}20`,
+                    background: active ? `${alert.color}20` : `${alert.color}05`,
+                    boxShadow: active ? `0 0 12px ${alert.color}30` : "none",
+                  }}
+                >
+                  <div className="flex items-center gap-2 w-full">
+                    <div className="size-3 rounded-sm border" style={{
+                      borderColor: alert.color,
+                      background: active ? alert.color : "transparent",
+                    }} />
+                    <span className="font-heading text-[10px] uppercase tracking-wider" style={{ color: alert.color }}>{alert.label}</span>
+                  </div>
+                  <span className="font-data text-[9px] text-[#4a6a8a]">{alert.desc}</span>
+                </button>
+              );
+            })}
           </div>
           {cameraFilterRow}
+          <Button
+            disabled={searching || selectedAlerts.size === 0}
+            onClick={async () => {
+              setSearching(true);
+              setHasSearched(true);
+              try {
+                const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+                const allResults: SearchResult[] = [];
+                for (const alertType of selectedAlerts) {
+                  const resp = await fetch(`${API}/api/video/alert-search`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ alert_type: alertType, video_file: "D01_20260420124029.mp4", frame_skip: 30 }),
+                  });
+                  if (resp.ok) {
+                    const data = await resp.json();
+                    const mapped = (data.detections ?? []).map((d: Record<string, unknown>, i: number) => ({
+                      track_id: `alert-${alertType}-${i}`,
+                      camera_id: (d.camera_id as string) ?? "D01",
+                      camera_name: `${alertType.replace(/_/g, " ").toUpperCase()}`,
+                      timestamp: new Date(((d.timestamp_sec as number) ?? 0) * 1000).toISOString(),
+                      object_type: "vehicle",
+                      confidence: (d.confidence as number) ?? 0,
+                      thumbnail_url: d.thumbnail_b64 ? `data:image/jpeg;base64,${d.thumbnail_b64}` : null,
+                      attributes: { ...d, thumbnail_b64: undefined },
+                    }));
+                    allResults.push(...mapped);
+                  }
+                }
+                setResults(allResults);
+              } catch { /* keep */ } finally { setSearching(false); }
+            }}
+            className="gap-2 rounded-sm border border-[#ff2d78]/30 bg-[#ff2d78]/10 font-heading text-[10px] uppercase tracking-wider text-[#ff2d78] hover:bg-[#ff2d78]/20"
+          >
+            {searching ? <Loader2 className="size-3.5 animate-spin" /> : <Search className="size-3.5" />}
+            {searching ? `SCANNING ${selectedAlerts.size} ALERTS...` : `SCAN FOR ${selectedAlerts.size} ALERT${selectedAlerts.size !== 1 ? "S" : ""}`}
+          </Button>
         </TabsContent>
       </Tabs>
 
@@ -666,11 +702,23 @@ export default function SearchPage() {
       {detailResult && (
         <div className="fixed inset-0 z-[9999] flex bg-black/90" onClick={() => setDetailResult(null)}>
           {/* Image area */}
-          <div className="flex-1 flex items-center justify-center p-4" onClick={(e) => e.stopPropagation()}>
+          <div className="flex-1 flex items-center justify-center p-4 relative" onClick={(e) => e.stopPropagation()}>
+            {detailViewMode === "full" && detailFullFrameUrl && (
+              <div className="absolute top-4 left-4 z-10 rounded-sm bg-black/70 px-3 py-1 font-data text-[10px] text-[#00ff88]">
+                4K FULL FRAME — loading may take a few seconds
+              </div>
+            )}
             <img
+              key={detailViewMode}
               src={detailViewMode === "crop" ? (detailCropUrl ?? detailResult.thumbnail_url ?? "") : (detailFullFrameUrl ?? "")}
               alt="Detail"
               className="max-w-full max-h-full object-contain rounded-sm"
+              onError={(e) => {
+                // If full frame fails, fall back to crop
+                if (detailViewMode === "full" && detailResult.thumbnail_url) {
+                  (e.target as HTMLImageElement).src = detailResult.thumbnail_url;
+                }
+              }}
             />
           </div>
 
