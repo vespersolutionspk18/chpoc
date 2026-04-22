@@ -75,18 +75,43 @@ class VehicleIndex:
             if len(results) >= top_k:
                 break
             meta = self.metadata[idx]
-            # Apply filters with fuzzy matching
+            # Apply filters with type mapping
             if filter_type:
                 ft = filter_type.lower().replace("-", "_").replace(" ", "_")
                 vc = meta.get("vehicle_class", "").lower().replace("-", "_").replace(" ", "_")
-                # Allow partial matches: "car" matches "sedan", "auto_rickshaw" matches "rickshaw"
-                if ft != vc and ft not in vc and vc not in ft:
+
+                # Map search types to what might be in the index
+                # YOLO classes: car, truck, bus, motorcycle
+                # CLIP classes: sedan, SUV, hatchback, pickup, van, bus, truck, motorcycle, auto_rickshaw
+                _TYPE_GROUPS = {
+                    "car": ["car", "sedan", "suv", "hatchback", "wagon", "minivan"],
+                    "sedan": ["sedan", "car"],
+                    "suv": ["suv", "car"],
+                    "hatchback": ["hatchback", "car"],
+                    "truck": ["truck", "pickup"],
+                    "pickup": ["pickup", "truck"],
+                    "van": ["van", "minivan", "car"],
+                    "minivan": ["minivan", "van"],
+                    "bus": ["bus"],
+                    "motorcycle": ["motorcycle"],
+                    "auto_rickshaw": ["auto_rickshaw", "rickshaw", "motorcycle"],
+                    "rickshaw": ["auto_rickshaw", "rickshaw", "motorcycle"],
+                    "chingchi": ["auto_rickshaw", "rickshaw", "chingchi"],
+                    "wagon": ["wagon", "car"],
+                }
+                allowed = _TYPE_GROUPS.get(ft, [ft])
+                if vc not in allowed:
                     continue
+
             if filter_color:
                 fc = filter_color.lower()
                 dc = meta.get("dominant_color", "").lower()
+                # Allow silver=grey match
+                _COLOR_ALIASES = {"silver": "grey", "grey": "silver"}
                 if fc != dc and fc not in dc and dc not in fc:
-                    continue
+                    alias = _COLOR_ALIASES.get(fc)
+                    if not alias or (alias != dc and alias not in dc):
+                        continue
             sim = float(sims[idx])
             if has_query and sim < 0.3:
                 continue
