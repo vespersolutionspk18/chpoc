@@ -257,7 +257,7 @@ export default function SearchPage() {
           object_type: "vehicle",
           confidence: (m.similarity as number) ?? 0,
           thumbnail_url: m.thumbnail_b64 ? `data:image/jpeg;base64,${m.thumbnail_b64}` : null,
-          attributes: { type: m.vehicle_class, color: m.dominant_color, make: m.make || "unknown", camera: m.camera_id, timestamp: `${Math.floor((m.timestamp_sec as number || 0) / 60)}:${(Math.floor((m.timestamp_sec as number || 0)) % 60).toString().padStart(2, "0")}` },
+          attributes: { ...m, thumbnail_b64: undefined },
         }));
         setResults(mapped);
       }
@@ -286,7 +286,7 @@ export default function SearchPage() {
           object_type: "vehicle",
           confidence: (m.similarity as number) ?? 0,
           thumbnail_url: m.thumbnail_b64 ? `data:image/jpeg;base64,${m.thumbnail_b64}` : null,
-          attributes: { type: m.vehicle_class, color: m.dominant_color, make: m.make || "unknown", camera: m.camera_id, timestamp: `${Math.floor((m.timestamp_sec as number || 0) / 60)}:${(Math.floor((m.timestamp_sec as number || 0)) % 60).toString().padStart(2, "0")}` },
+          attributes: { ...m, thumbnail_b64: undefined },
         }));
         setResults(mapped);
       }
@@ -296,31 +296,24 @@ export default function SearchPage() {
   async function openDetailModal(result: SearchResult) {
     setDetailResult(result);
     setDetailViewMode("crop");
-    setDetailFullFrameUrl(null);
-    setDetailCropUrl(null);
+    setDetailCropUrl(result.thumbnail_url ?? null);
 
     const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-    const vf = result.attributes?.video_file as string;
-    const ts = result.attributes?.timestamp as string;
-    // Parse timestamp "M:SS" to seconds
-    let sec = 0;
-    if (ts) {
-      const parts = ts.split(":");
-      sec = parseInt(parts[0] || "0") * 60 + parseInt(parts[1] || "0");
-    } else if (result.timestamp) {
-      sec = new Date(result.timestamp).getTime() / 1000;
-    }
+    const attrs = result.attributes ?? {};
+    const vf = (attrs.video_file as string) ?? "";
+    const sec = (attrs.timestamp_sec as number) ?? 0;
+    const bbox = attrs.bbox as Record<string, number> | undefined;
 
     if (vf) {
-      // Fetch full 4K frame
+      // Full 4K frame URL
       setDetailFullFrameUrl(`${API}/api/video/extract-frame?video_file=${encodeURIComponent(vf)}&timestamp=${sec}`);
 
-      // Fetch 4K crop if bbox available
-      // The bbox is stored in the index metadata but not in SearchResult.attributes
-      // For now, use the thumbnail as crop (it's already 400px quality)
-      if (result.thumbnail_url) {
-        setDetailCropUrl(result.thumbnail_url);
+      // 4K crop URL (with bbox)
+      if (bbox && bbox.x != null) {
+        setDetailCropUrl(`${API}/api/video/extract-frame?video_file=${encodeURIComponent(vf)}&timestamp=${sec}&x=${bbox.x}&y=${bbox.y}&w=${bbox.w}&h=${bbox.h}`);
       }
+    } else {
+      setDetailFullFrameUrl(null);
     }
   }
 
@@ -429,6 +422,10 @@ export default function SearchPage() {
             <Car className="mr-1.5 size-3.5" />
             VEHICLE SEARCH
           </TabsTrigger>
+          <TabsTrigger value={4} className={tabTriggerClass}>
+            <SlidersHorizontal className="mr-1.5 size-3.5" />
+            ALERT SEARCH
+          </TabsTrigger>
         </TabsList>
 
         {/* ─── Face Search ─── */}
@@ -519,6 +516,60 @@ export default function SearchPage() {
             {searching ? <Loader2 className="size-3.5 animate-spin" /> : <Car className="size-3.5" />}
             {searching ? "SEARCHING..." : "SEARCH VEHICLES"}
           </Button>
+        </TabsContent>
+
+        {/* ─── Alert Search ─── */}
+        <TabsContent value={4} className="space-y-4 pt-4">
+          <p className="font-data text-xs text-[#4a6a8a]">
+            Scan video frames for traffic violations and safety alerts using AI vision analysis.
+          </p>
+          <div className="grid grid-cols-2 gap-3 max-w-2xl lg:grid-cols-3">
+            {[
+              { id: "triple_sawari", label: "TRIPLE SAWARI", desc: "3+ people on a motorcycle", color: "#ff2d78" },
+              { id: "no_helmet", label: "NO HELMET", desc: "Bike rider without helmet", color: "#ff8800" },
+              { id: "wrong_way", label: "WRONG WAY", desc: "Vehicle going wrong direction", color: "#ff2d78" },
+              { id: "no_seatbelt", label: "NO SEATBELT", desc: "Driver without seatbelt", color: "#ffaa00" },
+              { id: "overloaded", label: "OVERLOADED", desc: "Vehicle carrying excess passengers/load", color: "#ff8800" },
+              { id: "phone_usage", label: "PHONE USAGE", desc: "Driver using mobile phone", color: "#ffaa00" },
+            ].map((alert) => (
+              <button
+                key={alert.id}
+                disabled={searching}
+                onClick={async () => {
+                  setSearching(true);
+                  setHasSearched(true);
+                  try {
+                    const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+                    const resp = await fetch(`${API}/api/video/alert-search`, {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ alert_type: alert.id, video_file: "D01_20260420124029.mp4", frame_skip: 30 }),
+                    });
+                    if (resp.ok) {
+                      const data = await resp.json();
+                      const mapped = (data.detections ?? []).map((d: Record<string, unknown>, i: number) => ({
+                        track_id: `alert-${i}`,
+                        camera_id: (d.camera_id as string) ?? "D01",
+                        camera_name: (d.video_file as string) ?? "",
+                        timestamp: new Date(((d.timestamp_sec as number) ?? 0) * 1000).toISOString(),
+                        object_type: "vehicle",
+                        confidence: (d.confidence as number) ?? 0,
+                        thumbnail_url: d.thumbnail_b64 ? `data:image/jpeg;base64,${d.thumbnail_b64}` : null,
+                        attributes: { ...d, thumbnail_b64: undefined },
+                      }));
+                      setResults(mapped);
+                    }
+                  } catch { /* keep */ } finally { setSearching(false); }
+                }}
+                className="flex flex-col items-start gap-1 rounded-sm border p-3 transition-all hover:shadow-lg disabled:opacity-50"
+                style={{ borderColor: `${alert.color}30`, background: `${alert.color}08` }}
+              >
+                <span className="font-heading text-[10px] uppercase tracking-wider" style={{ color: alert.color }}>{alert.label}</span>
+                <span className="font-data text-[9px] text-[#4a6a8a]">{alert.desc}</span>
+              </button>
+            ))}
+          </div>
+          {cameraFilterRow}
         </TabsContent>
       </Tabs>
 
@@ -675,16 +726,26 @@ export default function SearchPage() {
               </div>
             </div>
 
-            {/* All attributes */}
+            {/* All attributes — show everything Qwen returned */}
             <div className="space-y-1">
               <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#00f0ff]">ATTRIBUTES</h4>
               <div className="grid grid-cols-2 gap-2">
-                {detailResult.attributes && Object.entries(detailResult.attributes).map(([key, val]) => (
-                  <div key={key} className="rounded-sm border border-white/5 bg-white/[0.02] px-2.5 py-1.5">
-                    <span className="font-heading text-[7px] uppercase tracking-[0.2em] text-[#4a6a8a]">{key.replace(/_/g, " ")}</span>
-                    <p className="font-data text-[11px] text-[#e0f0ff] truncate">{String(val)}</p>
-                  </div>
-                ))}
+                {detailResult.attributes && Object.entries(detailResult.attributes)
+                  .filter(([k]) => !["thumbnail_b64", "bbox", "similarity"].includes(k))
+                  .map(([key, val]) => {
+                    if (val == null || val === "" || val === "unknown" || val === "not specified") return null;
+                    const label = key.replace(/_/g, " ").toUpperCase();
+                    let display: string;
+                    if (typeof val === "object") display = JSON.stringify(val);
+                    else if (typeof val === "number") display = key.includes("confidence") || key.includes("similarity") ? `${(val * 100).toFixed(0)}%` : String(val);
+                    else display = String(val);
+                    return (
+                      <div key={key} className="rounded-sm border border-white/5 bg-white/[0.02] px-2.5 py-1.5">
+                        <span className="font-heading text-[7px] uppercase tracking-[0.2em] text-[#4a6a8a]">{label}</span>
+                        <p className="font-data text-[11px] text-[#e0f0ff] truncate">{display}</p>
+                      </div>
+                    );
+                  }).filter(Boolean)}
               </div>
             </div>
 

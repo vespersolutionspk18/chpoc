@@ -476,6 +476,24 @@ async def extract_frame(
     )
 
 
+@router.post("/alert-search")
+async def alert_search(request: Request):
+    """Scan video frames for traffic violations using VLM."""
+    body = await request.json()
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{settings.AI_SERVICE_URL}/face/alert-search",
+                json=body,
+                timeout=300.0,
+            )
+            if resp.status_code == 200:
+                return resp.json()
+    except Exception as e:
+        logger.warning("Alert search failed: %s", e)
+    return {"detections": []}
+
+
 @router.post("/build-vehicle-index")
 async def build_vehicle_index():
     """Trigger vehicle index building on AI service."""

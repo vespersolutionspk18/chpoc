@@ -586,3 +586,135 @@ async def search_vehicle_by_image(image: UploadFile = File(...), top_k: int = Fo
     emb = _clip_embed_image(frame)
     results = vehicle_index.search(emb, top_k=top_k)
     return {"matches": results, "index_size": vehicle_index.size}
+
+
+# ---------------------------------------------------------------------------
+# Alert search — scan video frames for violations using VLM
+# ---------------------------------------------------------------------------
+
+ALERT_PROMPTS = {
+    "triple_sawari": "Are there 3 or more people sitting on this motorcycle? Answer YES or NO, then explain briefly.",
+    "no_helmet": "Is the motorcycle rider NOT wearing a helmet? Answer YES or NO, then explain briefly.",
+    "wrong_way": "Is this vehicle going the wrong way / against traffic flow? Answer YES or NO, then explain briefly.",
+    "no_seatbelt": "Is the car driver NOT wearing a seatbelt? Answer YES or NO, then explain briefly.",
+    "overloaded": "Is this vehicle overloaded with too many passengers or cargo? Answer YES or NO, then explain briefly.",
+    "phone_usage": "Is the driver using a mobile phone while driving? Answer YES or NO, then explain briefly.",
+}
+
+
+@router.post("/alert-search")
+async def alert_search(request: dict):
+    """Scan video for traffic violations using VLM on detected vehicles/bikes."""
+    import torch
+    from PIL import Image as PILImage
+    from ultralytics import YOLO
+
+    alert_type = request.get("alert_type", "triple_sawari")
+    video_file = request.get("video_file", "D01_20260420124029.mp4")
+    frame_skip = request.get("frame_skip", 30)
+    prompt = ALERT_PROMPTS.get(alert_type, ALERT_PROMPTS["triple_sawari"])
+
+    # Find video
+    video_path = None
+    for d in ["/root/camera_feeds/mp4", "/workspace/safe-city/test-data/pakistani"]:
+        p = Path(d) / video_file
+        if p.exists():
+            video_path = str(p)
+            break
+    if not video_path:
+        return {"detections": [], "error": f"Video not found: {video_file}"}
+
+    # Load models
+    yolo = YOLO("yolov8x.pt")
+    from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+    # Use the already-loaded VLM if available
+    model, processor = None, None
+    try:
+        from ai.app.routers.attributes import _get_vlm
+        model, processor = _get_vlm()
+    except:
+        pass
+    if model is None:
+        return {"detections": [], "error": "VLM not available"}
+
+    COCO_TARGETS = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
+    # For bike-related alerts, only look at motorcycles
+    bike_alerts = {"triple_sawari", "no_helmet"}
+    target_classes = {3} if alert_type in bike_alerts else set(COCO_TARGETS.keys())
+
+    cap = cv2.VideoCapture(video_path)
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25
+    fc = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    detections = []
+    fn = 0
+
+    logger.info("Alert search: %s on %s (%d frames, skip=%d)", alert_type, video_file, fc, frame_skip)
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if fn % frame_skip != 0:
+            fn += 1
+            continue
+
+        results = yolo(frame, conf=0.3, verbose=False)
+        for r in results:
+            if r.boxes is None:
+                continue
+            for i in range(len(r.boxes)):
+                cls = int(r.boxes.cls[i].item())
+                if cls not in target_classes:
+                    continue
+
+                x1, y1, x2, y2 = [int(v) for v in r.boxes.xyxy[i].tolist()]
+                h_, w_ = frame.shape[:2]
+                pad = int(max(x2-x1, y2-y1) * 0.15)
+                x1, y1 = max(0, x1-pad), max(0, y1-pad)
+                x2, y2 = min(w_, x2+pad), min(h_, y2+pad)
+                crop = frame[y1:y2, x1:x2]
+                if crop.size == 0:
+                    continue
+
+                # Ask VLM
+                pil = PILImage.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+                msgs = [{"role": "user", "content": [
+                    {"type": "image", "image": pil},
+                    {"type": "text", "text": prompt},
+                ]}]
+                text = processor.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+                inputs = processor(text=[text], images=[pil], return_tensors="pt").to(model.device)
+                with torch.no_grad():
+                    out = model.generate(**inputs, max_new_tokens=80, do_sample=False)
+                answer = processor.batch_decode(out[:, inputs["input_ids"].shape[1]:], skip_special_tokens=True)[0].strip()
+
+                if answer.upper().startswith("YES"):
+                    # Thumbnail
+                    th, tw = crop.shape[:2]
+                    if tw > 400:
+                        s = 400 / tw
+                        thumb = cv2.resize(crop, (400, int(th * s)))
+                    else:
+                        thumb = crop
+                    _, buf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 90])
+                    tb64 = base64.b64encode(buf.tobytes()).decode()
+
+                    detections.append({
+                        "alert_type": alert_type,
+                        "video_file": video_file,
+                        "camera_id": "D01",
+                        "frame_num": fn,
+                        "timestamp_sec": round(fn / fps, 2),
+                        "confidence": float(r.boxes.conf[i].item()),
+                        "vlm_response": answer,
+                        "thumbnail_b64": tb64,
+                    })
+                    logger.info("  ALERT %s @ frame %d: %s", alert_type, fn, answer[:50])
+
+        fn += 1
+        if len(detections) >= 50:
+            break  # cap at 50 alerts
+
+    cap.release()
+    logger.info("Alert search done: %d detections", len(detections))
+    return {"detections": detections, "total": len(detections), "alert_type": alert_type}
