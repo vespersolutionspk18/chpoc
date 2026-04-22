@@ -331,17 +331,42 @@ def _clip_embed_image(img_bgr: np.ndarray) -> list[float]:
 
 
 def _dominant_color(img_bgr: np.ndarray) -> str:
-    """Get dominant color name from an image using simple HSV analysis."""
-    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
-    h, s, v = hsv[:,:,0].mean(), hsv[:,:,1].mean(), hsv[:,:,2].mean()
-    if s < 40:
-        if v < 80: return "black"
-        if v > 180: return "white"
-        return "grey"
-    if h < 10 or h > 170: return "red"
-    if h < 25: return "orange"
-    if h < 35: return "yellow"
-    if h < 80: return "green"
+    """Get dominant color from CENTER of vehicle crop (ignores background/road).
+    Uses K-means on center 50% pixels for accurate body color."""
+    h_img, w_img = img_bgr.shape[:2]
+    # Take center 50% to avoid road/background at edges
+    y1 = h_img // 4
+    y2 = h_img * 3 // 4
+    x1 = w_img // 4
+    x2 = w_img * 3 // 4
+    center = img_bgr[y1:y2, x1:x2]
+    if center.size == 0:
+        center = img_bgr
+
+    # Convert to HSV for better color analysis
+    hsv = cv2.cvtColor(center, cv2.COLOR_BGR2HSV)
+    pixels = hsv.reshape(-1, 3).astype(np.float32)
+
+    # K-means to find dominant color cluster
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+    _, labels, centers = cv2.kmeans(pixels, 3, None, criteria, 3, cv2.KMEANS_PP_CENTERS)
+
+    # Pick largest cluster
+    counts = np.bincount(labels.flatten())
+    dominant = centers[np.argmax(counts)]
+    h, s, v = dominant
+
+    # Map HSV to color name
+    if s < 35:
+        if v < 60: return "black"
+        if v > 170: return "white"
+        return "silver"
+    if s < 60 and v > 100:
+        return "silver"
+    if h < 8 or h > 170: return "red"
+    if h < 20: return "orange"
+    if h < 33: return "yellow"
+    if h < 78: return "green"
     if h < 130: return "blue"
     if h < 160: return "purple"
     return "red"
@@ -364,42 +389,46 @@ async def build_vehicle_index(frame_skip: int = Form(15)):
     model_c, preprocess_c = _get_clip()
     device_c = next(model_c.parameters()).device
 
-    # Pre-tokenize classification prompts (do ONCE, not per vehicle)
-    type_labels = [
-        "a sedan car on the road", "a large SUV", "a small hatchback car",
-        "a pickup truck", "a van or minivan", "a large bus",
-        "a heavy truck or lorry", "a motorcycle or motorbike",
-        "a three-wheeled auto-rickshaw or tuk-tuk", "a station wagon",
+    # CLIP type classification — ONLY for YOLO "car" class (motorcycle/bus/truck are already accurate)
+    # Prompts emphasize VISUAL DISTINGUISHING FEATURES, not just names
+    car_subtype_labels = [
+        "a sedan car with a separate trunk compartment extending behind the rear window",
+        "a tall SUV or jeep with high ground clearance and large wheels",
+        "a small compact hatchback car with a sloped rear and no separate trunk",
+        "a pickup truck with an open cargo bed at the rear",
+        "a boxy van or minivan with a tall roof and sliding doors",
+        "a three-wheeled auto-rickshaw or tuk-tuk for passenger transport",
+        "a station wagon or estate car with an extended roofline",
     ]
-    type_names = ["sedan", "SUV", "hatchback", "pickup", "van", "bus",
-                  "truck", "motorcycle", "auto-rickshaw", "wagon"]
-    type_tokens = clip_module.tokenize(type_labels).to(device_c)
+    car_subtype_names = ["sedan", "SUV", "hatchback", "pickup", "van",
+                          "auto-rickshaw", "wagon"]
+    car_subtype_tokens = clip_module.tokenize(car_subtype_labels).to(device_c)
     with torch.no_grad():
-        type_text_features = model_c.encode_text(type_tokens)
-        type_text_features = type_text_features / type_text_features.norm(dim=-1, keepdim=True)
-
-    color_labels = [
-        "a red colored vehicle", "a blue colored vehicle", "a black colored vehicle",
-        "a white colored vehicle", "a green colored vehicle", "a grey colored vehicle",
-        "a brown colored vehicle", "a yellow colored vehicle", "a orange colored vehicle",
-        "a silver colored vehicle",
-    ]
-    color_names = ["red", "blue", "black", "white", "green", "grey",
-                   "brown", "yellow", "orange", "silver"]
-    color_tokens = clip_module.tokenize(color_labels).to(device_c)
-    with torch.no_grad():
-        color_text_features = model_c.encode_text(color_tokens)
-        color_text_features = color_text_features / color_text_features.norm(dim=-1, keepdim=True)
+        car_subtype_features = model_c.encode_text(car_subtype_tokens)
+        car_subtype_features = car_subtype_features / car_subtype_features.norm(dim=-1, keepdim=True)
 
     # Reset index
     vehicle_index.embeddings = None
     vehicle_index.metadata = []
 
+    # Dedup tracking — skip vehicles we've already seen (same car across frames)
+    seen_embeddings: list[np.ndarray] = []
+    DEDUP_THRESHOLD = 0.92  # cosine sim > this = same vehicle, skip
+
+    def _is_duplicate(emb: np.ndarray) -> bool:
+        if not seen_embeddings:
+            return False
+        # Compare against recent vehicles only (last 200) for speed
+        recent = seen_embeddings[-200:]
+        stack = np.array(recent, dtype=np.float32)
+        sims = (stack @ emb.reshape(-1, 1)).flatten()
+        return float(sims.max()) > DEDUP_THRESHOLD
+
     t0 = time.perf_counter()
     total_vehicles = 0
     total_frames = 0
+    total_skipped = 0
 
-    # Discover ALL videos
     all_videos = _discover_videos()
     logger.info("Found %d videos to index", len(all_videos))
 
@@ -446,37 +475,49 @@ async def build_vehicle_index(frame_skip: int = Form(15)):
                     if crop.size == 0:
                         continue
 
-                    # CLIP embedding
+                    # CLIP embedding for similarity search
                     pil_crop = PILImage.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
                     img_input = preprocess_c(pil_crop).unsqueeze(0).to(device_c)
                     with torch.no_grad():
                         img_f = model_c.encode_image(img_input)
                         img_f = img_f / img_f.norm(dim=-1, keepdim=True)
-                        emb = img_f[0].cpu().tolist()
+                        emb_np = img_f[0].cpu().numpy()
 
-                        # Type classification
-                        type_sims = (100.0 * img_f @ type_text_features.T).softmax(dim=-1)[0].cpu().tolist()
-                        best_type_idx = type_sims.index(max(type_sims))
-                        best_type = type_names[best_type_idx]
-                        best_type_conf = type_sims[best_type_idx]
+                    # Dedup — skip if we've seen this exact vehicle recently
+                    if _is_duplicate(emb_np):
+                        total_skipped += 1
+                        continue
 
-                        # Color classification
-                        color_sims = (100.0 * img_f @ color_text_features.T).softmax(dim=-1)[0].cpu().tolist()
-                        best_color_idx = color_sims.index(max(color_sims))
-                        best_color = color_names[best_color_idx]
+                    seen_embeddings.append(emb_np)
 
-                    # Full quality thumbnail (max 320px wide, quality 85)
+                    # COLOR — pixel-based analysis on center of crop (NOT CLIP)
+                    best_color = _dominant_color(crop)
+
+                    # TYPE — use YOLO class for motorcycle/bus/truck (already accurate)
+                    # Only sub-classify YOLO "car" using CLIP
+                    yolo_class = _VEHICLE_COCO[cls_id]
+                    if yolo_class == "car":
+                        with torch.no_grad():
+                            type_sims = (100.0 * img_f @ car_subtype_features.T).softmax(dim=-1)[0].cpu().tolist()
+                            best_type_idx = type_sims.index(max(type_sims))
+                            best_type = car_subtype_names[best_type_idx]
+                            best_type_conf = type_sims[best_type_idx]
+                    else:
+                        best_type = yolo_class
+                        best_type_conf = float(r.boxes.conf[i].item())
+
+                    # Full quality thumbnail (max 400px wide, quality 90)
                     th, tw = crop.shape[:2]
-                    if tw > 320:
-                        scale = 320 / tw
-                        thumb = cv2.resize(crop, (320, int(th * scale)), interpolation=cv2.INTER_AREA)
+                    if tw > 400:
+                        scale = 400 / tw
+                        thumb = cv2.resize(crop, (400, int(th * scale)), interpolation=cv2.INTER_AREA)
                     else:
                         thumb = crop
-                    _, buf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    _, buf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 90])
                     thumb_b64 = base64.b64encode(buf.tobytes()).decode("ascii")
 
                     vehicle_index.add(
-                        embedding=emb,
+                        embedding=emb_np.tolist(),
                         meta={
                             "camera_id": cam_id,
                             "video_file": video_name,
@@ -485,7 +526,7 @@ async def build_vehicle_index(frame_skip: int = Form(15)):
                             "vehicle_class": best_type,
                             "type_confidence": round(best_type_conf, 3),
                             "dominant_color": best_color,
-                            "yolo_class": _VEHICLE_COCO[cls_id],
+                            "yolo_class": yolo_class,
                             "bbox": {"x": x1, "y": y1, "w": x2-x1, "h": y2-y1},
                             "thumbnail_b64": thumb_b64,
                         },
@@ -495,13 +536,15 @@ async def build_vehicle_index(frame_skip: int = Form(15)):
             frame_num += 1
 
         cap.release()
-        logger.info("  %s: %d vehicles indexed", video_name, total_vehicles)
+        logger.info("  %s: %d unique vehicles (skipped %d dupes)", video_name, total_vehicles, total_skipped)
 
     vehicle_index.save()
     elapsed = time.perf_counter() - t0
+    logger.info("Vehicle index complete: %d unique, %d dupes skipped, %.0fs", total_vehicles, total_skipped, elapsed)
     return {
         "status": "ok",
         "total_vehicles_indexed": total_vehicles,
+        "duplicates_skipped": total_skipped,
         "total_frames_processed": total_frames,
         "elapsed_seconds": round(elapsed, 1),
         "index_size": vehicle_index.size,
