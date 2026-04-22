@@ -237,10 +237,10 @@ export default function SearchPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          embedding: new Array(512).fill(0), // dummy — we rely on filters
           top_k: 50,
           filter_type: vType !== "any" ? vType : null,
           filter_color: vColor !== "none" ? vColor : null,
+          filter_make: vMake !== "any" ? vMake : null,
         }),
       });
       if (resp.ok) {
@@ -253,7 +253,7 @@ export default function SearchPage() {
           object_type: "vehicle",
           confidence: (m.similarity as number) ?? 0,
           thumbnail_url: m.thumbnail_b64 ? `data:image/jpeg;base64,${m.thumbnail_b64}` : null,
-          attributes: { vehicle_class: m.vehicle_class, color: m.dominant_color, video_file: m.video_file },
+          attributes: { type: m.vehicle_class, color: m.dominant_color, make: m.make || "unknown", camera: m.camera_id, timestamp: `${Math.floor((m.timestamp_sec as number || 0) / 60)}:${(Math.floor((m.timestamp_sec as number || 0)) % 60).toString().padStart(2, "0")}` },
         }));
         setResults(mapped);
       }
@@ -282,7 +282,7 @@ export default function SearchPage() {
           object_type: "vehicle",
           confidence: (m.similarity as number) ?? 0,
           thumbnail_url: m.thumbnail_b64 ? `data:image/jpeg;base64,${m.thumbnail_b64}` : null,
-          attributes: { vehicle_class: m.vehicle_class, color: m.dominant_color, video_file: m.video_file },
+          attributes: { type: m.vehicle_class, color: m.dominant_color, make: m.make || "unknown", camera: m.camera_id, timestamp: `${Math.floor((m.timestamp_sec as number || 0) / 60)}:${(Math.floor((m.timestamp_sec as number || 0)) % 60).toString().padStart(2, "0")}` },
         }));
         setResults(mapped);
       }

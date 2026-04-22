@@ -51,7 +51,8 @@ class VehicleIndex:
         self.metadata.append(meta)
 
     def search(self, query_embedding: list[float] | None = None, top_k: int = 20,
-               filter_type: str | None = None, filter_color: str | None = None) -> list[dict]:
+               filter_type: str | None = None, filter_color: str | None = None,
+               filter_make: str | None = None) -> list[dict]:
         if self.embeddings is None or len(self.metadata) == 0:
             return []
 
@@ -112,6 +113,12 @@ class VehicleIndex:
                     alias = _COLOR_ALIASES.get(fc)
                     if not alias or (alias != dc and alias not in dc):
                         continue
+            if filter_make:
+                fm = filter_make.lower()
+                mk = meta.get("make", "").lower()
+                if fm != mk and fm not in mk and mk not in fm:
+                    continue
+
             sim = float(sims[idx])
             if has_query and sim < 0.3:
                 continue

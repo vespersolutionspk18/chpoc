@@ -553,10 +553,11 @@ async def build_vehicle_index(frame_skip: int = Form(15)):
 
 
 class VehicleSearchRequest(BaseModel):
-    embedding: list[float]
+    embedding: list[float] | None = None
     top_k: int = 20
     filter_type: str | None = None
     filter_color: str | None = None
+    filter_make: str | None = None
 
 
 @router.post("/vehicle-search")
@@ -565,8 +566,10 @@ async def search_vehicle(req: VehicleSearchRequest):
     from ai.app.services.vehicle_index import vehicle_index
     if vehicle_index.size == 0:
         return {"matches": [], "index_size": 0, "message": "Run /face/vehicle-index/build first"}
-    results = vehicle_index.search(req.embedding, top_k=req.top_k,
-                                    filter_type=req.filter_type, filter_color=req.filter_color)
+    emb = req.embedding if req.embedding else [0.0] * 512
+    results = vehicle_index.search(emb, top_k=req.top_k,
+                                    filter_type=req.filter_type, filter_color=req.filter_color,
+                                    filter_make=req.filter_make)
     return {"matches": results, "index_size": vehicle_index.size}
 
 
