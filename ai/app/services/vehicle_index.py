@@ -75,11 +75,18 @@ class VehicleIndex:
             if len(results) >= top_k:
                 break
             meta = self.metadata[idx]
-            # Apply filters
-            if filter_type and meta.get("vehicle_class", "").lower() != filter_type.lower():
-                continue
-            if filter_color and filter_color.lower() not in meta.get("dominant_color", "").lower():
-                continue
+            # Apply filters with fuzzy matching
+            if filter_type:
+                ft = filter_type.lower().replace("-", "_").replace(" ", "_")
+                vc = meta.get("vehicle_class", "").lower().replace("-", "_").replace(" ", "_")
+                # Allow partial matches: "car" matches "sedan", "auto_rickshaw" matches "rickshaw"
+                if ft != vc and ft not in vc and vc not in ft:
+                    continue
+            if filter_color:
+                fc = filter_color.lower()
+                dc = meta.get("dominant_color", "").lower()
+                if fc != dc and fc not in dc and dc not in fc:
+                    continue
             sim = float(sims[idx])
             if has_query and sim < 0.3:
                 continue

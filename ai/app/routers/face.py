@@ -399,8 +399,44 @@ async def build_vehicle_index(frame_skip: int = Form(10)):
                     _, buf = cv2.imencode(".jpg", thumb, [cv2.IMWRITE_JPEG_QUALITY, 70])
                     thumb_b64 = base64.b64encode(buf.tobytes()).decode("ascii")
 
-                    # Dominant color
-                    color = _dominant_color(crop)
+                    # CLIP zero-shot for vehicle type + color (proper classification)
+                    from PIL import Image as PILImage
+                    import clip as clip_module
+                    import torch
+
+                    pil_crop = PILImage.fromarray(cv2.cvtColor(crop, cv2.COLOR_BGR2RGB))
+                    model_c, preprocess_c = _get_clip()
+                    device_c = next(model_c.parameters()).device
+
+                    # Vehicle type classification
+                    type_labels = ["sedan car", "SUV", "hatchback car", "pickup truck", "van",
+                                   "bus", "truck", "motorcycle", "three-wheeled auto-rickshaw",
+                                   "minivan", "wagon"]
+                    type_names = ["sedan", "SUV", "hatchback", "pickup", "van",
+                                  "bus", "truck", "motorcycle", "auto-rickshaw",
+                                  "minivan", "wagon"]
+                    type_tokens = clip_module.tokenize(type_labels).to(device_c)
+                    img_input = preprocess_c(pil_crop).unsqueeze(0).to(device_c)
+                    with torch.no_grad():
+                        img_f = model_c.encode_image(img_input)
+                        txt_f = model_c.encode_text(type_tokens)
+                        img_f = img_f / img_f.norm(dim=-1, keepdim=True)
+                        txt_f = txt_f / txt_f.norm(dim=-1, keepdim=True)
+                        type_sims = (100.0 * img_f @ txt_f.T).softmax(dim=-1)[0].cpu().tolist()
+                    best_type = type_names[type_sims.index(max(type_sims))]
+
+                    # Color classification
+                    color_labels = ["red vehicle", "blue vehicle", "black vehicle", "white vehicle",
+                                    "green vehicle", "grey vehicle", "brown vehicle", "yellow vehicle",
+                                    "orange vehicle", "silver vehicle", "beige vehicle"]
+                    color_names = ["red", "blue", "black", "white", "green", "grey",
+                                   "brown", "yellow", "orange", "silver", "beige"]
+                    color_tokens = clip_module.tokenize(color_labels).to(device_c)
+                    with torch.no_grad():
+                        txt_f2 = model_c.encode_text(color_tokens)
+                        txt_f2 = txt_f2 / txt_f2.norm(dim=-1, keepdim=True)
+                        color_sims = (100.0 * img_f @ txt_f2.T).softmax(dim=-1)[0].cpu().tolist()
+                    best_color = color_names[color_sims.index(max(color_sims))]
 
                     vehicle_index.add(
                         embedding=emb,
@@ -409,8 +445,9 @@ async def build_vehicle_index(frame_skip: int = Form(10)):
                             "video_file": filename,
                             "frame_num": frame_num,
                             "timestamp_sec": round(frame_num / fps, 2),
-                            "vehicle_class": _VEHICLE_COCO[cls_id],
-                            "dominant_color": color,
+                            "vehicle_class": best_type,
+                            "dominant_color": best_color,
+                            "yolo_class": _VEHICLE_COCO[cls_id],
                             "bbox": {"x": x1, "y": y1, "w": x2-x1, "h": y2-y1},
                             "thumbnail_b64": thumb_b64,
                         },
