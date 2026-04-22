@@ -293,21 +293,16 @@ export default function LiveViewPage() {
                   }}
                   className="group relative w-full overflow-hidden rounded-sm bg-gradient-to-br from-[#0a1525] to-[#060d1a] border border-[#ff8800]/10 transition-all duration-200 hover:border-[#ff8800]/40 hover:shadow-[0_0_20px_#ff880015] cursor-pointer"
                 >
-                  <div className="relative aspect-video w-full overflow-hidden">
+                  <div className="relative aspect-video w-full overflow-hidden bg-gradient-to-br from-[#0d1520] to-[#080e18] flex items-center justify-center">
                     <div className="grid-lines pointer-events-none absolute inset-0 z-20 opacity-30" />
-                    <video
-                      src={`${API_URL}/api/video/nvr/file/${nvr.filename}`}
-                      crossOrigin="anonymous"
-                      autoPlay
-                      loop
-                      muted
-                      playsInline
-                      preload="none"
-                      className="absolute inset-0 w-full h-full object-cover"
-                    />
+                    {/* NO video element — just a clickable card. Video loads only in fullscreen viewer */}
+                    <div className="flex flex-col items-center gap-1 z-10">
+                      <HardDrive className="size-6 text-[#ff8800]/40" />
+                      <span className="font-heading text-[9px] uppercase tracking-wider text-[#ff8800]/60">CLICK TO PLAY</span>
+                    </div>
                     {/* Camera name */}
                     <div className="absolute left-2 top-2 z-30">
-                      <span className="font-data text-xs text-[#ff8800]/80 drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
+                      <span className="font-data text-xs text-[#ff8800]/80">
                         {nvr.camera_name}
                       </span>
                     </div>
@@ -320,7 +315,7 @@ export default function LiveViewPage() {
                     </div>
                     {/* Filename + size */}
                     <div className="absolute bottom-2 left-2 z-30">
-                      <span className="font-data text-[10px] text-[#4a6a8a] drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)]">
+                      <span className="font-data text-[10px] text-[#4a6a8a]">
                         {nvr.filename}
                       </span>
                     </div>

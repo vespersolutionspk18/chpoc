@@ -44,13 +44,16 @@ export function CameraFeedCard({
           <video
             src={`${API_URL}/api/video/file/${camera.id}`}
             crossOrigin="anonymous"
-            autoPlay
-            loop
             muted
             playsInline
-            preload="none"
+            preload="metadata"
             className="absolute inset-0 w-full h-full object-cover"
             onError={() => setStreamError(true)}
+            onLoadedData={(e) => {
+              // Show first frame as thumbnail, don't autoplay
+              const v = e.currentTarget;
+              v.currentTime = 1; // seek to 1s for a good thumbnail
+            }}
           />
         ) : (
           <>
