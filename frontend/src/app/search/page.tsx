@@ -130,6 +130,9 @@ export default function SearchPage() {
   const [vehicleFile, setVehicleFile] = useState<File | null>(null);
   const [vehiclePreview, setVehiclePreview] = useState<string | null>(null);
 
+  // Expanded thumbnail modal
+  const [expandedImage, setExpandedImage] = useState<string | null>(null);
+
   // Fetch cameras from API
   useEffect(() => {
     let cancelled = false;
@@ -227,20 +230,33 @@ export default function SearchPage() {
     setSearching(true);
     setHasSearched(true);
     try {
-      const attrs: Record<string, unknown> = {};
-      if (vType !== "any") attrs.vehicle_type = vType;
-      if (vColor !== "none") attrs.color = vColor;
-      if (vMake !== "any") attrs.make = vMake;
-      if (vCondition !== "any") attrs.condition = vCondition;
-
-      const res = await searchByAttributes({
-        object_type: "vehicle",
-        attributes: attrs,
-        camera_ids: getSelectedCameraIds(),
-        start_time: `${startDate}T00:00:00Z`,
-        end_time: `${endDate}T23:59:59Z`,
+      // Search the vehicle index (9,877 CLIP embeddings) with color/type filters
+      // Uses a dummy embedding search with filters — the index filters by metadata
+      const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+      const resp = await fetch(`${API_URL}/api/video/search-vehicle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          embedding: new Array(512).fill(0), // dummy — we rely on filters
+          top_k: 50,
+          filter_type: vType !== "any" ? vType : null,
+          filter_color: vColor !== "none" ? vColor : null,
+        }),
       });
-      setResults(res);
+      if (resp.ok) {
+        const data = await resp.json();
+        const mapped = (data.matches ?? []).map((m: Record<string, unknown>, i: number) => ({
+          track_id: `vattr-${i}`,
+          camera_id: (m.camera_id as string) ?? "",
+          camera_name: ((m.video_file as string) ?? "").replace("clip_", "").replace(".mp4", "").replace(/_/g, " "),
+          timestamp: new Date(((m.timestamp_sec as number) ?? 0) * 1000).toISOString(),
+          object_type: "vehicle",
+          confidence: (m.similarity as number) ?? 0,
+          thumbnail_url: m.thumbnail_b64 ? `data:image/jpeg;base64,${m.thumbnail_b64}` : null,
+          attributes: { vehicle_class: m.vehicle_class, color: m.dominant_color, video_file: m.video_file },
+        }));
+        setResults(mapped);
+      }
     } catch { /* keep */ } finally { setSearching(false); }
   }, [vType, vColor, vMake, vCondition, cameraFilter, startDate, endDate]);
 
@@ -490,14 +506,16 @@ export default function SearchPage() {
                 )
               }
             >
-              {/* Thumbnail — real image if available, icon fallback */}
-              <div className="relative aspect-video rounded-sm bg-gradient-to-br from-slate-800 to-slate-950 flex items-center justify-center overflow-hidden mb-3">
+              {/* Thumbnail — clickable for fullscreen */}
+              <div
+                className="relative aspect-video rounded-sm bg-gradient-to-br from-slate-800 to-slate-950 flex items-center justify-center overflow-hidden mb-3 cursor-pointer"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (result.thumbnail_url) setExpandedImage(result.thumbnail_url);
+                }}
+              >
                 {result.thumbnail_url ? (
-                  <img
-                    src={result.thumbnail_url}
-                    alt="match"
-                    className="absolute inset-0 w-full h-full object-cover"
-                  />
+                  <img src={result.thumbnail_url} alt="match" className="absolute inset-0 w-full h-full object-cover" />
                 ) : result.object_type === "person" ? (
                   <User className="size-10 text-[#4a6a8a]/30" />
                 ) : (
@@ -556,6 +574,16 @@ export default function SearchPage() {
               height="350px"
             />
           </div>
+        </div>
+      )}
+      {/* Expanded image modal */}
+      {expandedImage && (
+        <div
+          className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 cursor-pointer"
+          onClick={() => setExpandedImage(null)}
+        >
+          <img src={expandedImage} alt="Expanded" className="max-w-[85vw] max-h-[85vh] rounded-sm border border-[#00f0ff]/30 object-contain" />
+          <span className="absolute top-4 right-4 font-heading text-xs text-[#4a6a8a]">CLICK TO CLOSE</span>
         </div>
       )}
     </motion.div>
