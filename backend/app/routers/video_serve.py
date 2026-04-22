@@ -6,7 +6,7 @@ import logging
 import httpx
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Form, UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from PIL import Image
 
 from app.core.config import settings
@@ -428,6 +428,52 @@ async def search_face_by_image(image: UploadFile = File(...)):
     except Exception as e:
         logger.warning("Face image search failed: %s", e)
     return {"matches": [], "index_size": 0}
+
+
+@router.get("/extract-frame")
+async def extract_frame(
+    video_file: str = "",
+    timestamp: float = 0,
+    x: int = -1, y: int = -1, w: int = -1, h: int = -1,
+):
+    """Extract a full 4K frame or cropped region from a video at a timestamp."""
+    import cv2
+    import numpy as np
+
+    # Find the video file
+    video_path = None
+    for search_dir in ["/root/camera_feeds/mp4", settings.VIDEO_DIR]:
+        candidate = Path(search_dir) / video_file
+        if candidate.exists():
+            video_path = candidate
+            break
+    if not video_path:
+        raise HTTPException(404, f"Video not found: {video_file}")
+
+    cap = cv2.VideoCapture(str(video_path))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25
+    cap.set(cv2.CAP_PROP_POS_FRAMES, int(timestamp * fps))
+    ret, frame = cap.read()
+    cap.release()
+
+    if not ret or frame is None:
+        raise HTTPException(500, "Could not extract frame")
+
+    # Crop if bbox provided
+    if x >= 0 and y >= 0 and w > 0 and h > 0:
+        fh, fw = frame.shape[:2]
+        x1 = max(0, x)
+        y1 = max(0, y)
+        x2 = min(fw, x + w)
+        y2 = min(fh, y + h)
+        frame = frame[y1:y2, x1:x2]
+
+    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    return Response(
+        content=buf.tobytes(),
+        media_type="image/jpeg",
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
 
 
 @router.post("/build-vehicle-index")

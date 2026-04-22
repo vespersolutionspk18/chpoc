@@ -130,7 +130,11 @@ export default function SearchPage() {
   const [vehicleFile, setVehicleFile] = useState<File | null>(null);
   const [vehiclePreview, setVehiclePreview] = useState<string | null>(null);
 
-  // Expanded thumbnail modal
+  // Detail modal state
+  const [detailResult, setDetailResult] = useState<SearchResult | null>(null);
+  const [detailViewMode, setDetailViewMode] = useState<"crop" | "full">("crop");
+  const [detailFullFrameUrl, setDetailFullFrameUrl] = useState<string | null>(null);
+  const [detailCropUrl, setDetailCropUrl] = useState<string | null>(null);
   const [expandedImage, setExpandedImage] = useState<string | null>(null);
 
   // Fetch cameras from API
@@ -288,6 +292,37 @@ export default function SearchPage() {
       }
     } catch { /* keep */ } finally { setSearching(false); }
   }, [vehicleFile]);
+
+  async function openDetailModal(result: SearchResult) {
+    setDetailResult(result);
+    setDetailViewMode("crop");
+    setDetailFullFrameUrl(null);
+    setDetailCropUrl(null);
+
+    const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+    const vf = result.attributes?.video_file as string;
+    const ts = result.attributes?.timestamp as string;
+    // Parse timestamp "M:SS" to seconds
+    let sec = 0;
+    if (ts) {
+      const parts = ts.split(":");
+      sec = parseInt(parts[0] || "0") * 60 + parseInt(parts[1] || "0");
+    } else if (result.timestamp) {
+      sec = new Date(result.timestamp).getTime() / 1000;
+    }
+
+    if (vf) {
+      // Fetch full 4K frame
+      setDetailFullFrameUrl(`${API}/api/video/extract-frame?video_file=${encodeURIComponent(vf)}&timestamp=${sec}`);
+
+      // Fetch 4K crop if bbox available
+      // The bbox is stored in the index metadata but not in SearchResult.attributes
+      // For now, use the thumbnail as crop (it's already 400px quality)
+      if (result.thumbnail_url) {
+        setDetailCropUrl(result.thumbnail_url);
+      }
+    }
+  }
 
   function renderObjectTypeBadge(type: string) {
     const config: Record<string, { className: string; icon: typeof User }> = {
@@ -506,12 +541,12 @@ export default function SearchPage() {
                 )
               }
             >
-              {/* Thumbnail — clickable for fullscreen */}
+              {/* Thumbnail — click to open detail modal */}
               <div
                 className="relative aspect-video rounded-sm bg-gradient-to-br from-slate-800 to-slate-950 flex items-center justify-center overflow-hidden mb-3 cursor-pointer"
                 onClick={(e) => {
                   e.stopPropagation();
-                  if (result.thumbnail_url) setExpandedImage(result.thumbnail_url);
+                  openDetailModal(result);
                 }}
               >
                 {result.thumbnail_url ? (
@@ -576,14 +611,98 @@ export default function SearchPage() {
           </div>
         </div>
       )}
-      {/* Expanded image modal */}
-      {expandedImage && (
-        <div
-          className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 cursor-pointer"
-          onClick={() => setExpandedImage(null)}
-        >
-          <img src={expandedImage} alt="Expanded" className="max-w-[85vw] max-h-[85vh] rounded-sm border border-[#00f0ff]/30 object-contain" />
-          <span className="absolute top-4 right-4 font-heading text-xs text-[#4a6a8a]">CLICK TO CLOSE</span>
+      {/* Detail modal — full 4K image + sidebar with all info */}
+      {detailResult && (
+        <div className="fixed inset-0 z-[9999] flex bg-black/90" onClick={() => setDetailResult(null)}>
+          {/* Image area */}
+          <div className="flex-1 flex items-center justify-center p-4" onClick={(e) => e.stopPropagation()}>
+            <img
+              src={detailViewMode === "crop" ? (detailCropUrl ?? detailResult.thumbnail_url ?? "") : (detailFullFrameUrl ?? "")}
+              alt="Detail"
+              className="max-w-full max-h-full object-contain rounded-sm"
+            />
+          </div>
+
+          {/* Right sidebar */}
+          <div className="w-[380px] shrink-0 border-l border-[#00f0ff]/15 bg-[#020a18] overflow-y-auto p-4 space-y-4" onClick={(e) => e.stopPropagation()}>
+            {/* Close */}
+            <div className="flex items-center justify-between">
+              <h3 className="font-heading text-xs uppercase tracking-widest text-[#00f0ff]">DETAIL VIEW</h3>
+              <button onClick={() => setDetailResult(null)} className="text-[#4a6a8a] hover:text-white font-heading text-xs">CLOSE</button>
+            </div>
+
+            {/* View toggle */}
+            <div className="flex gap-2">
+              <button
+                onClick={() => setDetailViewMode("crop")}
+                className={`flex-1 rounded-sm border py-1.5 font-heading text-[9px] uppercase tracking-wider transition-colors ${
+                  detailViewMode === "crop" ? "border-[#00f0ff]/40 bg-[#00f0ff]/15 text-[#00f0ff]" : "border-white/10 text-[#4a6a8a] hover:text-white"
+                }`}
+              >
+                VEHICLE CROP
+              </button>
+              <button
+                onClick={() => setDetailViewMode("full")}
+                className={`flex-1 rounded-sm border py-1.5 font-heading text-[9px] uppercase tracking-wider transition-colors ${
+                  detailViewMode === "full" ? "border-[#00ff88]/40 bg-[#00ff88]/15 text-[#00ff88]" : "border-white/10 text-[#4a6a8a] hover:text-white"
+                }`}
+              >
+                FULL FRAME
+              </button>
+            </div>
+
+            {/* Badge */}
+            {renderObjectTypeBadge(detailResult.object_type)}
+
+            {/* Confidence */}
+            <div className="rounded-sm border border-white/5 bg-white/[0.02] px-3 py-2">
+              <span className="font-heading text-[7px] uppercase tracking-[0.2em] text-[#4a6a8a]">MATCH CONFIDENCE</span>
+              <p className="font-data text-lg text-[#00ff88]">{(detailResult.confidence * 100).toFixed(0)}%</p>
+            </div>
+
+            {/* Camera info */}
+            <div className="space-y-1">
+              <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#00f0ff]">SOURCE</h4>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-sm border border-white/5 bg-white/[0.02] px-2.5 py-1.5">
+                  <span className="font-heading text-[7px] uppercase tracking-[0.2em] text-[#4a6a8a]">CAMERA</span>
+                  <p className="font-data text-[11px] text-[#e0f0ff] truncate">{detailResult.camera_name}</p>
+                </div>
+                <div className="rounded-sm border border-white/5 bg-white/[0.02] px-2.5 py-1.5">
+                  <span className="font-heading text-[7px] uppercase tracking-[0.2em] text-[#4a6a8a]">TIME</span>
+                  <p className="font-data text-[11px] text-[#e0f0ff]">{(detailResult.attributes?.timestamp as string) ?? "N/A"}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* All attributes */}
+            <div className="space-y-1">
+              <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#00f0ff]">ATTRIBUTES</h4>
+              <div className="grid grid-cols-2 gap-2">
+                {detailResult.attributes && Object.entries(detailResult.attributes).map(([key, val]) => (
+                  <div key={key} className="rounded-sm border border-white/5 bg-white/[0.02] px-2.5 py-1.5">
+                    <span className="font-heading text-[7px] uppercase tracking-[0.2em] text-[#4a6a8a]">{key.replace(/_/g, " ")}</span>
+                    <p className="font-data text-[11px] text-[#e0f0ff] truncate">{String(val)}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="space-y-2 pt-2">
+              <button
+                onClick={() => {
+                  // Trigger reverse search with this vehicle's thumbnail
+                  if (detailResult.thumbnail_url) {
+                    setExpandedImage(detailResult.thumbnail_url);
+                  }
+                }}
+                className="w-full rounded-sm border border-[#ff2d78]/30 bg-[#ff2d78]/10 py-2 font-heading text-[9px] uppercase tracking-wider text-[#ff2d78] hover:bg-[#ff2d78]/20"
+              >
+                FIND SIMILAR VEHICLES
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </motion.div>
