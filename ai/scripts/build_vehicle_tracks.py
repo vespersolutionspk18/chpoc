@@ -188,6 +188,80 @@ def main():
                     if len(t["frames"]) >= 5 and t["best_crop"] is not None}
     print(f"Valid tracks (5+ frames): {len(valid_tracks)}", flush=True)
 
+    # Phase 1.5: Best-frame plate extraction
+    # For each track, find the frame with the sharpest plate region, OCR it
+    print("Phase 1.5: Extracting license plates (best frame per track)...", flush=True)
+    import requests as req_lib
+    cap2 = cv2.VideoCapture(VIDEO)
+    plate_results: dict[int, dict] = {}  # track_id -> {plate_text, plate_conf, plate_image_b64}
+
+    for tid, t in valid_tracks.items():
+        # Sample up to 10 frames evenly across the track
+        frame_indices = t["frames"]
+        if len(frame_indices) > 10:
+            step = len(frame_indices) // 10
+            sample_indices = frame_indices[::step][:10]
+        else:
+            sample_indices = frame_indices
+
+        best_sharpness = 0
+        best_plate_crop = None
+
+        for fidx in sample_indices:
+            cap2.set(cv2.CAP_PROP_POS_FRAMES, fidx)
+            ret, frame = cap2.read()
+            if not ret:
+                continue
+
+            # Get bbox for this frame
+            try:
+                idx_in_track = t["frames"].index(fidx)
+                x1, y1, x2, y2 = t["bboxes"][idx_in_track]
+            except (ValueError, IndexError):
+                continue
+
+            h_, w_ = frame.shape[:2]
+            bw, bh = x2 - x1, y2 - y1
+            pad = int(max(bw, bh) * 0.1)
+            px1 = max(0, x1 - pad)
+            py1 = max(0, y1 - pad)
+            px2 = min(w_, x2 + pad)
+            py2 = min(h_, y2 + pad)
+            crop = frame[py1:py2, px1:px2]
+            if crop.size == 0:
+                continue
+
+            # Score sharpness using Laplacian variance
+            gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+            sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
+
+            if sharpness > best_sharpness:
+                best_sharpness = sharpness
+                best_plate_crop = crop.copy()
+
+        # Send sharpest crop to plate OCR endpoint
+        if best_plate_crop is not None:
+            try:
+                _, buf = cv2.imencode(".jpg", best_plate_crop, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                resp = req_lib.post(
+                    "http://localhost:8001/plate/read",
+                    files={"image": ("crop.jpg", buf.tobytes(), "image/jpeg")},
+                    timeout=15,
+                )
+                if resp.status_code == 200:
+                    pd = resp.json()
+                    if pd.get("plate_text") and len(pd["plate_text"]) >= 2:
+                        plate_results[tid] = {
+                            "plate_text": pd["plate_text"],
+                            "plate_confidence": round(pd.get("confidence", 0), 3),
+                            "plate_image_b64": pd.get("plate_image_b64", ""),
+                        }
+            except Exception as e:
+                pass
+
+    cap2.release()
+    print(f"Phase 1.5 done: {len(plate_results)} plates found from {len(valid_tracks)} tracks", flush=True)
+
     # Phase 2: Classify each track with VLM + CLIP
     print("Phase 2: Classifying with Qwen2.5-VL...", flush=True)
     t1 = time.time()
@@ -289,6 +363,12 @@ def main():
             meta["model"] = vmodel
         if vlm_attrs:
             meta["attributes"] = vlm_attrs
+
+        # Merge plate OCR data from Phase 1.5
+        if tid in plate_results:
+            meta["plate_text"] = plate_results[tid]["plate_text"]
+            meta["plate_confidence"] = plate_results[tid]["plate_confidence"]
+            meta["plate_image_b64"] = plate_results[tid]["plate_image_b64"]
 
         metadata.append(meta)
 

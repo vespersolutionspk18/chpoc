@@ -789,6 +789,28 @@ export default function SearchPage() {
               <button onClick={() => setDetailResult(null)} className="rounded-sm border border-[#ff2d78]/30 bg-[#ff2d78]/10 px-2 py-1 text-[#ff2d78] font-heading text-[9px] hover:bg-[#ff2d78]/20">CLOSE</button>
             </div>
 
+            {/* License Plate */}
+            {(a.plate_text as string) && (
+              <div className="border-b border-white/5 px-4 py-3 space-y-2">
+                <h4 className="font-heading text-[10px] uppercase tracking-widest text-[#00ff88]">LICENSE PLATE</h4>
+                {(a.plate_image_b64 as string) && (
+                  <img
+                    src={`data:image/jpeg;base64,${a.plate_image_b64 as string}`}
+                    alt="Plate"
+                    className="mx-auto max-w-full rounded-sm border border-[#00ff88]/20 object-contain max-h-24"
+                  />
+                )}
+                <div className="rounded-sm border border-[#00ff88]/20 bg-[#00ff88]/5 p-2 text-center">
+                  <span className="font-data text-xl tracking-wider text-[#00ff88]">{String(a.plate_text)}</span>
+                </div>
+                {(a.plate_confidence as number) > 0 && (
+                  <p className="font-data text-[10px] text-[#4a6a8a] text-center">
+                    OCR Confidence: {((a.plate_confidence as number) * 100).toFixed(0)}%
+                  </p>
+                )}
+              </div>
+            )}
+
             {/* Description */}
             {(a.description as string) && (
               <div className="border-b border-white/5 px-4 py-3">

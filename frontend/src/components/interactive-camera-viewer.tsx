@@ -410,7 +410,7 @@ export function InteractiveCameraViewer({ camera, onClose, videoUrlOverride, vid
               apiUrl={API_URL}
               enabled={drawMode}
               onAnalysis={() => {
-                setDrawMode(false);
+                // DON'T close draw mode — let the SelectionTool show its result panel
               }}
             />
           )}
