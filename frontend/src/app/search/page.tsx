@@ -580,21 +580,25 @@ export default function SearchPage() {
                 const resp = await fetch(`${API}/api/video/search-vehicle`, {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ top_k: 100 }),
+                  body: JSON.stringify({ top_k: 9999 }),  // Get ALL vehicles to filter for alerts
                 });
                 if (resp.ok) {
                   const data = await resp.json();
                   // Filter matches that have the selected alert attributes
                   const alertMatches = (data.matches ?? []).filter((m: Record<string, unknown>) => {
-                    const attrs = (m.attributes as Record<string, unknown>) ?? m;
+                    const attrs = (m.attributes as Record<string, unknown>) ?? {};
                     for (const alertType of selectedAlerts) {
-                      if (alertType === "triple_sawari" && String(attrs.triple_sawari ?? m.triple_sawari ?? "").toLowerCase() === "yes") return true;
-                      if (alertType === "no_helmet" && String(attrs.no_helmet ?? m.no_helmet ?? "").toLowerCase() === "yes") return true;
-                      if (alertType === "overloaded" && String(attrs.overloaded ?? m.overloaded ?? "").toLowerCase() === "yes") return true;
-                      // For passengers > 1 on motorcycle = triple sawari
+                      const check = (key: string) => {
+                        const v = String(attrs[key] ?? m[key] ?? "").toLowerCase();
+                        return v === "yes" || v === "true";
+                      };
+                      if (alertType === "triple_sawari" && check("triple_sawari")) return true;
+                      if (alertType === "no_helmet" && check("no_helmet")) return true;
+                      if (alertType === "overloaded" && check("overloaded")) return true;
+                      // Passengers count check for triple sawari
                       if (alertType === "triple_sawari" && m.vehicle_class === "motorcycle") {
-                        const pv = String(attrs.passengers_visible ?? m.passengers_visible ?? "0");
-                        if (parseInt(pv) >= 3) return true;
+                        const pv = parseInt(String(attrs.passengers_visible ?? m.passengers_visible ?? "0"));
+                        if (pv >= 3) return true;
                       }
                     }
                     return false;
