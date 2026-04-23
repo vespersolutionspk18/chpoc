@@ -377,7 +377,7 @@ export function InteractiveCameraViewer({ camera, onClose, videoUrlOverride, vid
         </div>
 
         {/* Video + overlays */}
-        <div className="relative flex-1 bg-black cursor-pointer" onClick={onVideoClick}>
+        <div className="relative flex-1 bg-black cursor-pointer" onClick={drawMode ? undefined : onVideoClick}>
           <video
             ref={videoRef}
             src={videoUrl}

@@ -791,24 +791,32 @@ async def extract_vehicle_attributes(image: UploadFile = File(...)):
         if model is not None:
             try:
                 prompt_text = (
-                    "Analyze this vehicle image for a surveillance system. Return a JSON object with exactly two keys:\n\n"
-                    '{"description": "2-3 sentence description", "attributes": {...}}\n\n'
-                    "For 'attributes', include ONLY what you can clearly see. Use these keys when applicable:\n"
-                    "- vehicle_type (sedan, SUV, hatchback, truck, van, bus, motorcycle, auto-rickshaw, chingchi, pickup, wagon, minivan)\n"
-                    "- make (e.g. 'Toyota', 'Suzuki', 'Honda', 'Sazgar' — omit if unsure)\n"
-                    "- model (e.g. 'Corolla', 'Mehran', 'City' — omit if unsure)\n"
-                    "- color (primary body color)\n"
-                    "- registration_number (if any text/numbers visible on plates or body)\n"
-                    "- condition (new, good, old, damaged, rusty)\n"
-                    "- damage (describe visible damage — omit if none)\n"
-                    "- direction (approaching, moving_away, parked, turning)\n"
-                    "- distinguishing_marks (stickers, dents, modifications, roof rack, etc. — omit if none)\n"
-                    "- any other notable features\n\n"
-                    "Rules:\n"
-                    "- Three-wheeled vehicles are auto-rickshaw or chingchi, NOT cars\n"
-                    "- ONLY include attributes you can CLEARLY see. Do NOT guess make/model.\n"
-                    "- If you see text/numbers on the vehicle, include them in registration_number\n"
-                    "- Describe colors precisely"
+                    'You are analyzing a vehicle from a Pakistani street surveillance camera.\n'
+                    'Return a JSON: {"description":"2-3 sentences","attributes":{...}}\n\n'
+                    'VEHICLE TYPE — choose ONE:\n'
+                    '- "sedan" (Toyota Corolla, Honda City/Civic, Suzuki Liana, Toyota Yaris, Nissan Sunny)\n'
+                    '- "hatchback" (Suzuki Mehran/Alto/Cultus/Swift, Toyota Vitz/Passo, Daihatsu Mira/Cuore, FAW V2, Prince Pearl)\n'
+                    '- "SUV" (Toyota Fortuner/Prado, Honda CR-V/BR-V, Kia Sportage, Hyundai Tucson)\n'
+                    '- "van" — fully enclosed metal body, glass windows, solid doors (Suzuki Bolan/Carry/Every, Toyota HiAce, FAW XPV, Changan Karvaan)\n'
+                    '- "pickup" (Toyota Hilux/Revo, Suzuki Ravi, Isuzu D-Max)\n'
+                    '- "truck" (Hino, Isuzu, Bedford, Master)\n'
+                    '- "bus" (Daewoo, Higer, Yutong, coaster)\n'
+                    '- "motorcycle" (Honda CD70/CG125, Yamaha YBR, Suzuki GS150, United, Road Prince)\n'
+                    '- "auto-rickshaw" — open-sided, tubular frame, canvas covers, bench seat (Qingqi, Sazgar, Dingqi)\n\n'
+                    'CRITICAL: Suzuki Bolan/Carry = ALWAYS "van". If it has glass windows and metal doors, it is a VAN.\n\n'
+                    'FOR "attributes", include ONLY what you can clearly see:\n'
+                    '- vehicle_type, color, make, model\n'
+                    '- registration_number (any text/numbers on plates or body)\n'
+                    '- passengers_visible, windows (clear/tinted/broken), windshield condition\n'
+                    '- headlights, taillights, bumper_front, bumper_rear condition\n'
+                    '- body_damage, paint_condition, modifications, stickers_decals\n'
+                    '- license_plate_visible (yes/no/partial), plate_text if readable\n'
+                    '- condition_overall (new/good/used/old/damaged)\n'
+                    '- direction (approaching/moving_away/parked/turning)\n'
+                    '- special_markings (police/taxi/delivery/government)\n'
+                    '- triple_sawari: "yes" if 3+ people on motorcycle\n'
+                    '- no_helmet: "yes" if rider has no helmet\n\n'
+                    'State the ACTUAL color. Do NOT guess make/model if unsure.'
                 )
 
                 messages = [{"role": "user", "content": [
