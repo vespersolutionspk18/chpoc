@@ -9,8 +9,8 @@ class Settings(BaseSettings):
     SECRET_KEY: str = "change-me-in-production"
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
     VIDEO_DIR: str = "../test-data/pakistani"
-    NVR_VIDEO_DIR: str = "/root/camera_feeds/mp4_720p"
-    NVR_VIDEO_DIR_ORIGINAL: str = "/root/camera_feeds/mp4"
+    NVR_VIDEO_DIR: str = "/workspace/nvr_videos"
+    NVR_VIDEO_DIR_ORIGINAL: str = "/workspace/nvr_videos"
     SIMULATION_MODE: bool = False  # Set to True only for local dev without real videos
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}

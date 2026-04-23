@@ -34,7 +34,7 @@ NVR_CAMERA_MAP = {
     "D08": "00000000-0000-4000-8000-000000000004",
     "D10": "00000000-0000-4000-8000-000000000005",
 }
-NVR_DIR = Path("/root/camera_feeds/mp4")
+NVR_DIR = Path("/workspace/nvr_videos")
 
 
 def _get_latest_nvr(camera_id: str) -> Path | None:
@@ -83,7 +83,7 @@ async def get_video_file_hq(camera_id: str):
     nvr_file = _get_latest_nvr(camera_id)
     if nvr_file and nvr_file.exists():
         # Return the ORIGINAL 4K, not the 720p
-        original = Path("/root/camera_feeds/mp4") / nvr_file.name
+        original = Path("/workspace/nvr_videos") / nvr_file.name
         if original.exists():
             video_path = original
         else:
@@ -446,7 +446,7 @@ async def extract_frame(
 
     # Find the video file
     video_path = None
-    for search_dir in ["/root/camera_feeds/mp4", settings.VIDEO_DIR]:
+    for search_dir in ["/workspace/nvr_videos", settings.VIDEO_DIR]:
         candidate = Path(search_dir) / video_file
         if candidate.exists():
             video_path = candidate
@@ -489,7 +489,7 @@ async def extract_clip(
     """Extract a video clip from start to end seconds using ffmpeg."""
     # Find the video file
     video_path = None
-    for search_dir in ["/root/camera_feeds/mp4", settings.VIDEO_DIR]:
+    for search_dir in ["/workspace/nvr_videos", settings.VIDEO_DIR]:
         candidate = Path(search_dir) / video_file
         if candidate.exists():
             video_path = candidate

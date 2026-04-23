@@ -23,7 +23,7 @@ from PIL import Image
 from pathlib import Path
 from collections import defaultdict
 
-VIDEO = sys.argv[1] if len(sys.argv) > 1 else "/root/camera_feeds/mp4/D01_20260420124029.mp4"
+VIDEO = sys.argv[1] if len(sys.argv) > 1 else "/workspace/nvr_videos/D01_20260420124029.mp4"
 CAMERA_ID = Path(VIDEO).stem.split("_")[0] if "_" in Path(VIDEO).stem else "D01"
 VIDEO_FILE = Path(VIDEO).name
 
