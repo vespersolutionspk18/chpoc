@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { X } from "lucide-react";
+import { X, Pencil } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { Camera } from "@/lib/types";
+import { SelectionTool } from "@/components/selection-tool";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -62,6 +63,7 @@ export function InteractiveCameraViewer({ camera, onClose, videoUrlOverride, vid
   const [searching, setSearching] = useState(false);
   const [expandedThumb, setExpandedThumb] = useState<string | null>(null);
   const cropBlobRef = useRef<Blob | null>(null);
+  const [drawMode, setDrawMode] = useState(false);
 
   const videoUrl = videoUrlOverride ?? `${API_URL}/api/video/file/${camera.id}`;
 
@@ -401,6 +403,18 @@ export function InteractiveCameraViewer({ camera, onClose, videoUrlOverride, vid
             />
           )}
 
+          {/* Drawing tool overlay */}
+          {drawMode && (
+            <SelectionTool
+              sourceRef={videoRef}
+              apiUrl={API_URL}
+              enabled={drawMode}
+              onAnalysis={() => {
+                setDrawMode(false);
+              }}
+            />
+          )}
+
           {/* Detection boxes — clickable */}
           {detections.length > 0 && (
             <svg
@@ -472,6 +486,16 @@ export function InteractiveCameraViewer({ camera, onClose, videoUrlOverride, vid
           {/* Play/Pause */}
           <button onClick={togglePause} className="rounded-sm border border-[#00f0ff]/20 bg-[#00f0ff]/5 px-2 py-1 font-heading text-[9px] uppercase tracking-wider text-[#00f0ff] hover:bg-[#00f0ff]/15">
             {paused ? "▶ PLAY" : "⏸ PAUSE"}
+          </button>
+          {/* Draw mode toggle */}
+          <button
+            onClick={() => { setDrawMode(!drawMode); if (!drawMode) { const v = videoRef.current; if (v && !v.paused) { v.pause(); setPaused(true); } } }}
+            className={`rounded-sm border px-2 py-1 font-heading text-[9px] uppercase tracking-wider ${
+              drawMode ? "border-[#ff8800]/40 bg-[#ff8800]/20 text-[#ff8800]" : "border-white/10 text-[#4a6a8a] hover:text-white hover:bg-white/5"
+            }`}
+          >
+            <Pencil className="size-3 inline mr-1" />
+            {drawMode ? "DRAWING" : "DRAW"}
           </button>
           {/* Frame step */}
           <button onClick={() => stepFrame(-1)} className="rounded-sm border border-white/10 px-1.5 py-1 font-data text-[10px] text-[#4a6a8a] hover:text-white hover:bg-white/5">
