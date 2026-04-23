@@ -56,28 +56,35 @@ CRITICAL — AUTO-RICKSHAW vs VAN:
 - If it has proper glass windows and solid metal doors, it is a VAN, not a rickshaw.
 - Suzuki Bolan, Suzuki Carry, Suzuki Every = ALWAYS "van".
 
-FOR "attributes", include ONLY what you can clearly observe:
-- passengers_visible: number of people visible inside or on the vehicle
-- windows: "clear" / "tinted" / "dark tinted" / "rolled down" / "broken"
-- windshield: stickers, cracks, tinting, sun strip, objects on dashboard
-- dashboard_objects: anything visible (tissues, phone holder, decoration)
-- headlights: "on" / "off" / "broken" / "missing" / "aftermarket"
-- taillights: "intact" / "broken" / "missing"
-- bumper_front: "intact" / "damaged" / "missing" / "aftermarket"
-- bumper_rear: "intact" / "damaged" / "missing"
-- body_damage: any dents, scratches, rust, accident damage, missing panels
-- paint_condition: "original" / "repainted" / "faded" / "peeling" / "mismatched"
-- modifications: aftermarket parts, spoilers, bull bars, roof racks, LED bars
-- stickers_decals: stickers, company logos, route numbers, phone numbers
-- roof: luggage, carrier, rack, AC unit, taxi sign
-- license_plate_visible: "yes" / "no" / "partial" / "obscured"
-- plate_text: actual text if readable
-- cargo: any visible cargo or goods
+CRITICAL RULES FOR ATTRIBUTES:
+- ONLY describe what is VISIBLE from THIS camera angle. If the rear is not visible, do NOT mention taillights or rear bumper.
+- If the front is not visible, do NOT mention headlights or front bumper.
+- NO false positives. If you are not sure about something, OMIT it entirely. Do not guess.
+- Only include an attribute if you can CLEARLY and CONFIDENTLY see it.
+
+FOR "attributes", use ONLY these keys when the feature is VISIBLE:
+- passengers_visible: number of people you can actually count inside or on the vehicle
+- windows: "clear" / "tinted" / "dark tinted" / "rolled down" / "broken" (only for windows you can see)
+- windshield: stickers, cracks, tinting (only if windshield is facing camera)
+- headlights: condition (ONLY if front of vehicle is visible)
+- taillights: condition (ONLY if rear of vehicle is visible)
+- bumper_front: condition (ONLY if front is visible)
+- bumper_rear: condition (ONLY if rear is visible)
+- body_damage: describe ANY visible dents, scratches, rust, missing panels, accident damage
+- paint_condition: "original" / "repainted" / "faded" / "peeling" / "mismatched panels"
+- modifications: any visible aftermarket parts, bull bars, roof racks, LED bars
+- stickers_decals: any visible stickers, logos, route numbers, phone numbers
+- roof_items: anything on roof (luggage, carrier, rack, taxi sign) — only if roof is visible
+- license_plate_visible: "yes" / "partial" / "no"
+- plate_text: actual characters if you can read them — do NOT guess
+- cargo: visible cargo or goods being carried
 - condition_overall: "new" / "good" / "used" / "old" / "damaged"
-- special_markings: police, ambulance, military, government, taxi, delivery
-- triple_sawari: "yes" if 3 or more people are on a motorcycle, otherwise omit
-- no_helmet: "yes" if motorcycle rider has no helmet, otherwise omit
-- overloaded: "yes" if vehicle is carrying excess passengers or cargo, otherwise omit"""
+- special_markings: police, ambulance, military, taxi, delivery — only if clearly marked
+
+ALERT CHECKS (for motorcycles):
+- triple_sawari: "yes" ONLY if you can clearly count 3 or more people on a motorcycle. Do NOT say yes if unsure.
+- no_helmet: "yes" ONLY if you can clearly see the rider's head has no helmet. Do NOT say yes if head is not visible.
+- overloaded: "yes" ONLY if vehicle is clearly carrying excess passengers or dangerously stacked cargo."""
 
 
 def compute_direction(path: list[tuple[float, float]]) -> str:

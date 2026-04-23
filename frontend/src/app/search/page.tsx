@@ -575,46 +575,31 @@ export default function SearchPage() {
               setSearching(true);
               setHasSearched(true);
               try {
-                // Search the INDEXED vehicle data for alerts (already analyzed by VLM during indexing)
                 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-                const resp = await fetch(`${API}/api/video/search-vehicle`, {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ top_k: 9999 }),  // Get ALL vehicles to filter for alerts
-                });
-                if (resp.ok) {
-                  const data = await resp.json();
-                  // Filter matches that have the selected alert attributes
-                  const alertMatches = (data.matches ?? []).filter((m: Record<string, unknown>) => {
-                    const attrs = (m.attributes as Record<string, unknown>) ?? {};
-                    for (const alertType of selectedAlerts) {
-                      const check = (key: string) => {
-                        const v = String(attrs[key] ?? m[key] ?? "").toLowerCase();
-                        return v === "yes" || v === "true";
-                      };
-                      if (alertType === "triple_sawari" && check("triple_sawari")) return true;
-                      if (alertType === "no_helmet" && check("no_helmet")) return true;
-                      if (alertType === "overloaded" && check("overloaded")) return true;
-                      // Passengers count check for triple sawari
-                      if (alertType === "triple_sawari" && m.vehicle_class === "motorcycle") {
-                        const pv = parseInt(String(attrs.passengers_visible ?? m.passengers_visible ?? "0"));
-                        if (pv >= 3) return true;
-                      }
-                    }
-                    return false;
+                const allResults: SearchResult[] = [];
+                // Query server-side alert filter for each selected alert type
+                for (const alertType of selectedAlerts) {
+                  const resp = await fetch(`${API}/api/video/search-vehicle`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ top_k: 50, filter_alert: alertType }),
                   });
-                  const mapped = alertMatches.map((m: Record<string, unknown>, i: number) => ({
-                    track_id: `alert-${i}`,
-                    camera_id: (m.camera_id as string) ?? "D01",
-                    camera_name: String(m.video_file ?? ""),
-                    timestamp: new Date(((m.timestamp_sec as number) ?? 0) * 1000).toISOString(),
-                    object_type: "vehicle",
-                    confidence: (m.similarity as number) ?? 1,
-                    thumbnail_url: m.thumbnail_b64 ? `data:image/jpeg;base64,${m.thumbnail_b64}` : null,
-                    attributes: { ...m, thumbnail_b64: undefined },
-                  }));
-                  setResults(mapped);
+                  if (resp.ok) {
+                    const data = await resp.json();
+                    const mapped = (data.matches ?? []).map((m: Record<string, unknown>, i: number) => ({
+                      track_id: `alert-${alertType}-${i}`,
+                      camera_id: (m.camera_id as string) ?? "D01",
+                      camera_name: `${alertType.replace(/_/g, " ").toUpperCase()}`,
+                      timestamp: new Date(((m.timestamp_sec as number) ?? 0) * 1000).toISOString(),
+                      object_type: "vehicle",
+                      confidence: (m.similarity as number) ?? 1,
+                      thumbnail_url: m.thumbnail_b64 ? `data:image/jpeg;base64,${m.thumbnail_b64}` : null,
+                      attributes: { ...m, thumbnail_b64: undefined },
+                    }));
+                    allResults.push(...mapped);
+                  }
                 }
+                setResults(allResults);
               } catch { /* keep */ } finally { setSearching(false); }
             }}
             className="gap-2 rounded-sm border border-[#ff2d78]/30 bg-[#ff2d78]/10 font-heading text-[10px] uppercase tracking-wider text-[#ff2d78] hover:bg-[#ff2d78]/20"

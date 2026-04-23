@@ -558,6 +558,7 @@ class VehicleSearchRequest(BaseModel):
     filter_type: str | None = None
     filter_color: str | None = None
     filter_make: str | None = None
+    filter_alert: str | None = None  # "no_helmet", "triple_sawari", "overloaded"
 
 
 @router.post("/vehicle-search")
@@ -570,6 +571,19 @@ async def search_vehicle(req: VehicleSearchRequest):
     results = vehicle_index.search(emb, top_k=req.top_k,
                                     filter_type=req.filter_type, filter_color=req.filter_color,
                                     filter_make=req.filter_make)
+
+    # Server-side alert filtering
+    if req.filter_alert:
+        alert_key = req.filter_alert
+        filtered = []
+        for r in vehicle_index.metadata:
+            attrs = r.get("attributes", {})
+            if str(attrs.get(alert_key, "")).lower() == "yes":
+                match = r.copy()
+                match["similarity"] = 1.0
+                filtered.append(match)
+        results = filtered[:req.top_k]
+
     return {"matches": results, "index_size": vehicle_index.size}
 
 

@@ -242,11 +242,29 @@ export function SelectionTool({
         tmp.height = srcH;
         const tctx = tmp.getContext("2d");
         if (!tctx) { setAnalyzing(false); return; }
-        tctx.drawImage(source, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
+        try {
+          tctx.drawImage(source, srcX, srcY, srcW, srcH, 0, 0, srcW, srcH);
+        } catch (drawErr) {
+          // CORS tainted canvas — try drawing without cross-origin
+          const errResult: RegionAnalysis = { error: `Canvas capture failed (CORS): ${drawErr}. Try pausing the video first.` };
+          setResult(errResult);
+          onAnalysis?.(errResult);
+          setAnalyzing(false);
+          return;
+        }
 
-        const blob = await new Promise<Blob | null>((resolve) =>
-          tmp.toBlob((b) => resolve(b), "image/jpeg", 0.92),
-        );
+        let blob: Blob | null = null;
+        try {
+          blob = await new Promise<Blob | null>((resolve) =>
+            tmp.toBlob((b) => resolve(b), "image/jpeg", 0.92),
+          );
+        } catch (blobErr) {
+          const errResult: RegionAnalysis = { error: `Image export failed (CORS): ${blobErr}` };
+          setResult(errResult);
+          onAnalysis?.(errResult);
+          setAnalyzing(false);
+          return;
+        }
         if (!blob) { setAnalyzing(false); return; }
 
         const form = new FormData();
