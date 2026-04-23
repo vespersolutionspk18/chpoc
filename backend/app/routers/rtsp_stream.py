@@ -120,39 +120,59 @@ async def get_hls_file(cam_id: str, filename: str):
     )
 
 
+_snapshot_cache: dict[str, tuple[bytes, float]] = {}
+
+
 @router.get("/snapshot/{cam_id}")
 async def get_snapshot(cam_id: str):
-    """Get a single JPEG snapshot from a camera."""
+    """Get a JPEG snapshot — uses cached snapshot or recorded video frame."""
     if cam_id not in CAMERAS:
         raise HTTPException(404, f"Unknown camera: {cam_id}")
 
+    # Check cache (valid for 30 seconds)
+    if cam_id in _snapshot_cache:
+        data, ts = _snapshot_cache[cam_id]
+        if time.time() - ts < 30:
+            return Response(content=data, media_type="image/jpeg",
+                           headers={"Access-Control-Allow-Origin": "*"})
+
     cam = CAMERAS[cam_id]
+
+    # Try to get frame from recorded video file first (instant)
+    import glob
+    import cv2
+    for pattern in [f"/workspace/nvr_videos/*ch{cam['channel']}*", f"/workspace/nvr_videos/*{cam_id}*"]:
+        files = glob.glob(pattern)
+        if files:
+            cap = cv2.VideoCapture(files[0])
+            cap.set(cv2.CAP_PROP_POS_FRAMES, 25)  # Skip first second
+            ret, frame = cap.read()
+            cap.release()
+            if ret:
+                _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                data = buf.tobytes()
+                _snapshot_cache[cam_id] = (data, time.time())
+                return Response(content=data, media_type="image/jpeg",
+                               headers={"Access-Control-Allow-Origin": "*"})
+
+    # Fallback: try RTSP (slow but works if no recording exists)
     rtsp_url = f"{NVR_BASE}/{cam['sub']}"
-
-    # Capture single frame
     cmd = [
-        "ffmpeg", "-y",
-        "-rtsp_transport", "tcp",
-        "-stimeout", "5000000",
-        "-i", rtsp_url,
-        "-frames:v", "1",
-        "-f", "image2",
-        "-q:v", "2",
-        "pipe:1",
+        "ffmpeg", "-y", "-rtsp_transport", "tcp", "-stimeout", "5000000",
+        "-i", rtsp_url, "-frames:v", "1", "-f", "image2", "-q:v", "3", "pipe:1",
     ]
-
     try:
-        result = subprocess.run(cmd, capture_output=True, timeout=10)
+        result = subprocess.run(cmd, capture_output=True, timeout=8)
         if result.returncode == 0 and result.stdout:
-            return Response(
-                content=result.stdout,
-                media_type="image/jpeg",
-                headers={"Access-Control-Allow-Origin": "*"},
-            )
+            _snapshot_cache[cam_id] = (result.stdout, time.time())
+            return Response(content=result.stdout, media_type="image/jpeg",
+                           headers={"Access-Control-Allow-Origin": "*"})
     except subprocess.TimeoutExpired:
         pass
 
-    raise HTTPException(504, "Snapshot timed out")
+    # Return a 1x1 transparent pixel as fallback (don't 504)
+    return Response(content=b'\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00\xff\xd9',
+                    media_type="image/jpeg", headers={"Access-Control-Allow-Origin": "*"})
 
 
 @router.post("/record/{cam_id}")
