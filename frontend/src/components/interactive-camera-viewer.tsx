@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { X, Pencil } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import Hls from "hls.js";
 import type { Camera } from "@/lib/types";
 import { SelectionTool } from "@/components/selection-tool";
 
@@ -66,6 +67,25 @@ export function InteractiveCameraViewer({ camera, onClose, videoUrlOverride, vid
   const [drawMode, setDrawMode] = useState(false);
 
   const videoUrl = videoUrlOverride ?? `${API_URL}/api/video/file/${camera.id}`;
+  const isHls = videoUrl.includes(".m3u8");
+
+  // HLS.js initialization for live streams
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !isHls) return;
+
+    if (Hls.isSupported()) {
+      const hls = new Hls({ enableWorker: true, lowLatencyMode: true, backBufferLength: 10 });
+      hls.loadSource(videoUrl);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        video.play().catch(() => {});
+      });
+      return () => hls.destroy();
+    } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      video.src = videoUrl;
+    }
+  }, [videoUrl, isHls]);
 
   // Capture current frame as blob — downscale to 640px wide for faster upload
   const captureFrame = useCallback((): Promise<Blob | null> => {
@@ -380,10 +400,10 @@ export function InteractiveCameraViewer({ camera, onClose, videoUrlOverride, vid
         <div className="relative flex-1 bg-black cursor-pointer" onClick={drawMode ? undefined : onVideoClick}>
           <video
             ref={videoRef}
-            src={videoUrl}
+            src={isHls ? undefined : videoUrl}
             crossOrigin="anonymous"
-            autoPlay
-            loop
+            autoPlay={!isHls}
+            loop={!isHls}
             muted
             playsInline
             onCanPlay={onVideoReady}

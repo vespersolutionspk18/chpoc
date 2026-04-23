@@ -57,6 +57,21 @@ export default function LiveViewPage() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [loading, setLoading] = useState(true);
   const [nvrFiles, setNvrFiles] = useState<NvrFile[]>([]);
+  const [liveCameras, setLiveCameras] = useState<{id: string; name: string; hls_url: string; snapshot_url: string}[]>([]);
+
+  // Load live cameras from NVR
+  useEffect(() => {
+    async function loadLive() {
+      try {
+        const resp = await fetch(`${API_URL}/api/live/cameras`);
+        if (resp.ok) {
+          const data = await resp.json();
+          setLiveCameras(data.cameras ?? []);
+        }
+      } catch { /* unavailable */ }
+    }
+    loadLive();
+  }, []);
 
   // Load NVR recordings list
   useEffect(() => {
@@ -67,9 +82,7 @@ export default function LiveViewPage() {
           const data = await resp.json();
           setNvrFiles(data.files ?? []);
         }
-      } catch {
-        // NVR list unavailable
-      }
+      } catch { /* unavailable */ }
     }
     loadNvr();
   }, []);
@@ -259,6 +272,67 @@ export default function LiveViewPage() {
             );
           })}
         </div>
+        {/* ============================================================== */}
+        {/* LIVE NVR CAMERAS — HLS streams from Hikvision NVR              */}
+        {/* ============================================================== */}
+        {liveCameras.length > 0 && !fullscreenCamera && (
+          <div className="space-y-3 pt-2">
+            <div className="flex items-center gap-2">
+              <Play className="size-4 text-[#ff2d78]" />
+              <h2 className="font-heading text-sm uppercase tracking-wider text-[#ff2d78]">
+                LIVE CAMERAS
+              </h2>
+              <span className="inline-flex items-center gap-1">
+                <span className="inline-block size-2 animate-pulse rounded-full bg-[#ff2d78]" />
+                <span className="font-data text-[10px] text-[#ff2d78]">{liveCameras.length} STREAMS</span>
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              {liveCameras.map((lc) => (
+                <div
+                  key={lc.id}
+                  onClick={() => {
+                    const pseudoCamera: Camera = {
+                      id: lc.id,
+                      name: lc.name,
+                      location_lat: 0,
+                      location_lng: 0,
+                      zone_id: `LIVE / ${lc.name}`,
+                      stream_url: "",
+                      status: "online",
+                      analytics_profile: null,
+                      created_at: "",
+                      updated_at: "",
+                    };
+                    setFullscreenVideoUrl(`${API_URL}${lc.hls_url}`);
+                    setFullscreenCamera(pseudoCamera);
+                  }}
+                  className="group relative w-full overflow-hidden rounded-sm bg-gradient-to-br from-[#0a1525] to-[#060d1a] border border-[#ff2d78]/10 transition-all duration-200 hover:border-[#ff2d78]/40 hover:shadow-[0_0_20px_#ff2d7815] cursor-pointer"
+                >
+                  <div className="relative aspect-video w-full overflow-hidden bg-gradient-to-br from-[#0d1520] to-[#080e18] flex items-center justify-center">
+                    <img
+                      src={`${API_URL}${lc.snapshot_url}`}
+                      alt={lc.name}
+                      className="absolute inset-0 w-full h-full object-cover"
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                    />
+                    <div className="absolute inset-0 flex items-center justify-center z-10">
+                      <Play className="size-8 text-[#ff2d78]/40 group-hover:text-[#ff2d78]/80 transition-colors" />
+                    </div>
+                    <div className="absolute left-2 top-2 z-20">
+                      <span className="font-data text-xs text-white/80 drop-shadow-[0_1px_3px_rgba(0,0,0,0.9)]">{lc.name}</span>
+                    </div>
+                    <div className="absolute right-2 top-2 z-20 flex items-center gap-1">
+                      <span className="inline-block size-1.5 animate-pulse rounded-full bg-[#ff2d78]" />
+                      <span className="font-data text-[9px] text-[#ff2d78]">LIVE</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* ============================================================== */}
         {/* NVR RECORDINGS — raw camera feeds below the analysis grid      */}
         {/* ============================================================== */}
