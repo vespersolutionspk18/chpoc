@@ -2,11 +2,15 @@
 import base64
 import io
 import logging
+import os
+import subprocess
+import tempfile
 
 import httpx
 from pathlib import Path
 from fastapi import APIRouter, HTTPException, Form, UploadFile, File
 from fastapi.responses import FileResponse, Response
+from starlette.background import BackgroundTask
 from PIL import Image
 
 from app.core.config import settings
@@ -476,6 +480,58 @@ async def extract_frame(
     )
 
 
+@router.get("/extract-clip")
+async def extract_clip(
+    video_file: str = "",
+    start: float = 0,
+    end: float = 10,
+):
+    """Extract a video clip from start to end seconds using ffmpeg."""
+    # Find the video file
+    video_path = None
+    for search_dir in ["/root/camera_feeds/mp4", settings.VIDEO_DIR]:
+        candidate = Path(search_dir) / video_file
+        if candidate.exists():
+            video_path = candidate
+            break
+    if not video_path:
+        raise HTTPException(404, f"Video not found: {video_file}")
+
+    duration = end - start
+    if duration <= 0 or duration > 120:  # max 2 min clips
+        raise HTTPException(400, "Invalid clip duration")
+
+    # Extract clip with ffmpeg
+    tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+    tmp.close()
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", str(start),
+        "-i", str(video_path),
+        "-t", str(duration),
+        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+        "-an",  # no audio
+        "-movflags", "+faststart",
+        tmp.name,
+    ]
+
+    result = subprocess.run(cmd, capture_output=True, timeout=30)
+    if result.returncode != 0:
+        os.unlink(tmp.name)
+        raise HTTPException(500, "ffmpeg clip extraction failed")
+
+    return FileResponse(
+        tmp.name,
+        media_type="video/mp4",
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Content-Disposition": f"inline; filename=clip_{start}_{end}.mp4",
+        },
+        background=BackgroundTask(os.unlink, tmp.name),
+    )
+
+
 @router.post("/alert-search")
 async def alert_search(request: Request):
     """Scan video frames for traffic violations using VLM."""
@@ -492,6 +548,24 @@ async def alert_search(request: Request):
     except Exception as e:
         logger.warning("Alert search failed: %s", e)
     return {"detections": []}
+
+
+@router.post("/analyze-region")
+async def analyze_region(image: UploadFile = File(...)):
+    """Send a user-selected region to the AI service for general VLM analysis."""
+    contents = await image.read()
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{settings.AI_SERVICE_URL}/attributes/analyze-region",
+                files={"image": ("region.jpg", contents, "image/jpeg")},
+                timeout=60.0,
+            )
+            if resp.status_code == 200:
+                return resp.json()
+    except Exception as e:
+        logger.warning("Region analysis failed: %s", e)
+    return {"error": "Analysis failed"}
 
 
 @router.post("/build-vehicle-index")

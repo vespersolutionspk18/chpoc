@@ -74,7 +74,10 @@ FOR "attributes", include ONLY what you can clearly observe:
 - plate_text: actual text if readable
 - cargo: any visible cargo or goods
 - condition_overall: "new" / "good" / "used" / "old" / "damaged"
-- special_markings: police, ambulance, military, government, taxi, delivery"""
+- special_markings: police, ambulance, military, government, taxi, delivery
+- triple_sawari: "yes" if 3 or more people are on a motorcycle, otherwise omit
+- no_helmet: "yes" if motorcycle rider has no helmet, otherwise omit
+- overloaded: "yes" if vehicle is carrying excess passengers or cargo, otherwise omit"""
 
 
 def compute_direction(path: list[tuple[float, float]]) -> str:

@@ -575,30 +575,42 @@ export default function SearchPage() {
               setSearching(true);
               setHasSearched(true);
               try {
+                // Search the INDEXED vehicle data for alerts (already analyzed by VLM during indexing)
                 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
-                const allResults: SearchResult[] = [];
-                for (const alertType of selectedAlerts) {
-                  const resp = await fetch(`${API}/api/video/alert-search`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ alert_type: alertType, video_file: "D01_20260420124029.mp4", frame_skip: 30 }),
+                const resp = await fetch(`${API}/api/video/search-vehicle`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ top_k: 100 }),
+                });
+                if (resp.ok) {
+                  const data = await resp.json();
+                  // Filter matches that have the selected alert attributes
+                  const alertMatches = (data.matches ?? []).filter((m: Record<string, unknown>) => {
+                    const attrs = (m.attributes as Record<string, unknown>) ?? m;
+                    for (const alertType of selectedAlerts) {
+                      if (alertType === "triple_sawari" && String(attrs.triple_sawari ?? m.triple_sawari ?? "").toLowerCase() === "yes") return true;
+                      if (alertType === "no_helmet" && String(attrs.no_helmet ?? m.no_helmet ?? "").toLowerCase() === "yes") return true;
+                      if (alertType === "overloaded" && String(attrs.overloaded ?? m.overloaded ?? "").toLowerCase() === "yes") return true;
+                      // For passengers > 1 on motorcycle = triple sawari
+                      if (alertType === "triple_sawari" && m.vehicle_class === "motorcycle") {
+                        const pv = String(attrs.passengers_visible ?? m.passengers_visible ?? "0");
+                        if (parseInt(pv) >= 3) return true;
+                      }
+                    }
+                    return false;
                   });
-                  if (resp.ok) {
-                    const data = await resp.json();
-                    const mapped = (data.detections ?? []).map((d: Record<string, unknown>, i: number) => ({
-                      track_id: `alert-${alertType}-${i}`,
-                      camera_id: (d.camera_id as string) ?? "D01",
-                      camera_name: `${alertType.replace(/_/g, " ").toUpperCase()}`,
-                      timestamp: new Date(((d.timestamp_sec as number) ?? 0) * 1000).toISOString(),
-                      object_type: "vehicle",
-                      confidence: (d.confidence as number) ?? 0,
-                      thumbnail_url: d.thumbnail_b64 ? `data:image/jpeg;base64,${d.thumbnail_b64}` : null,
-                      attributes: { ...d, thumbnail_b64: undefined },
-                    }));
-                    allResults.push(...mapped);
-                  }
+                  const mapped = alertMatches.map((m: Record<string, unknown>, i: number) => ({
+                    track_id: `alert-${i}`,
+                    camera_id: (m.camera_id as string) ?? "D01",
+                    camera_name: String(m.video_file ?? ""),
+                    timestamp: new Date(((m.timestamp_sec as number) ?? 0) * 1000).toISOString(),
+                    object_type: "vehicle",
+                    confidence: (m.similarity as number) ?? 1,
+                    thumbnail_url: m.thumbnail_b64 ? `data:image/jpeg;base64,${m.thumbnail_b64}` : null,
+                    attributes: { ...m, thumbnail_b64: undefined },
+                  }));
+                  setResults(mapped);
                 }
-                setResults(allResults);
               } catch { /* keep */ } finally { setSearching(false); }
             }}
             className="gap-2 rounded-sm border border-[#ff2d78]/30 bg-[#ff2d78]/10 font-heading text-[10px] uppercase tracking-wider text-[#ff2d78] hover:bg-[#ff2d78]/20"
@@ -746,7 +758,7 @@ export default function SearchPage() {
             <div className="flex-1 flex items-center justify-center p-4 bg-black">
               {detailViewMode === "video" && hasVideo ? (
                 <video
-                  src={`${API}/api/video/nvr/file/${videoFile}#t=${startSec},${endSec}`}
+                  src={`${API}/api/video/extract-clip?video_file=${encodeURIComponent(videoFile)}&start=${startSec}&end=${Math.min(endSec, startSec + 30)}`}
                   crossOrigin="anonymous"
                   controls
                   autoPlay

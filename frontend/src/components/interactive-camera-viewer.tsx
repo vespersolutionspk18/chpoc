@@ -729,7 +729,7 @@ export function InteractiveCameraViewer({ camera, onClose, videoUrlOverride, vid
                     </div>
                   )}
 
-                  {/* AI DESCRIPTION */}
+                  {/* AI DESCRIPTION — shown as paragraph above attributes */}
                   {description && (
                     <>
                       <div className="h-px bg-gradient-to-r from-transparent via-white/10 to-transparent" />
@@ -740,25 +740,54 @@ export function InteractiveCameraViewer({ camera, onClose, videoUrlOverride, vid
                     </>
                   )}
 
-                  {/* DYNAMIC ATTRIBUTES — rendered from whatever keys the VLM returned */}
-                  {Object.keys(attrs).length > 0 && (
-                    <>
-                      <div className="h-px bg-gradient-to-r from-transparent via-white/10 to-transparent" />
-                      <div className="space-y-2">
-                        <h4 className="font-heading text-[10px] uppercase tracking-widest" style={{ color: accent }}>ATTRIBUTES</h4>
-                        <div className="grid grid-cols-2 gap-2">
-                          {Object.entries(attrs).map(([key, val]) => {
-                            const label = key.replace(/_/g, " ").toUpperCase();
-                            let display: string;
-                            if (typeof val === "boolean") display = val ? "Yes" : "No";
-                            else if (val == null) display = "N/A";
-                            else display = String(val).replace(/_/g, " ");
-                            return <Cell key={key} label={label} value={display} />;
-                          })}
+                  {/* DYNAMIC ATTRIBUTES — property:value table, flattened */}
+                  {Object.keys(attrs).length > 0 && (() => {
+                    const FILTER_KEYS = new Set(["thumbnail_b64", "bbox", "similarity", "upscaled_image_b64"]);
+                    // Flatten: if a value is an object, expand its keys as separate rows
+                    const rows: { key: string; label: string; value: string }[] = [];
+                    for (const [key, val] of Object.entries(attrs)) {
+                      if (FILTER_KEYS.has(key)) continue;
+                      if (val != null && typeof val === "object" && !Array.isArray(val)) {
+                        for (const [subKey, subVal] of Object.entries(val as Record<string, unknown>)) {
+                          if (FILTER_KEYS.has(subKey)) continue;
+                          let display: string;
+                          if (typeof subVal === "boolean") display = subVal ? "Yes" : "No";
+                          else if (subVal == null) display = "N/A";
+                          else display = String(subVal).replace(/_/g, " ");
+                          rows.push({ key: `${key}.${subKey}`, label: subKey.replace(/_/g, " ").toUpperCase(), value: display });
+                        }
+                      } else {
+                        let display: string;
+                        if (typeof val === "boolean") display = val ? "Yes" : "No";
+                        else if (val == null) display = "N/A";
+                        else display = String(val).replace(/_/g, " ");
+                        rows.push({ key, label: key.replace(/_/g, " ").toUpperCase(), value: display });
+                      }
+                    }
+                    if (rows.length === 0) return null;
+                    return (
+                      <>
+                        <div className="h-px bg-gradient-to-r from-transparent via-white/10 to-transparent" />
+                        <div className="space-y-2">
+                          <h4 className="font-heading text-[10px] uppercase tracking-widest" style={{ color: accent }}>ATTRIBUTES</h4>
+                          <table className="w-full border-collapse">
+                            <tbody>
+                              {rows.map((row) => (
+                                <tr key={row.key} className="border-b border-white/5">
+                                  <td className="w-[140px] min-w-[140px] py-1.5 pr-2 align-top font-heading text-[7px] uppercase tracking-[0.15em] text-[#4a6a8a] whitespace-nowrap">
+                                    {row.label}
+                                  </td>
+                                  <td className="py-1.5 font-data text-[11px] text-[#e0f0ff] break-words" style={{ wordWrap: "break-word", overflowWrap: "break-word" }}>
+                                    {row.value}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
                         </div>
-                      </div>
-                    </>
-                  )}
+                      </>
+                    );
+                  })()}
 
                   {/* SOURCE CAMERA */}
                   <div className="h-px bg-gradient-to-r from-transparent via-white/10 to-transparent" />

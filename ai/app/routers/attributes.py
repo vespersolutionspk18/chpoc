@@ -854,3 +854,127 @@ async def extract_vehicle_attributes(image: UploadFile = File(...)):
     except Exception as e:
         logger.error("attributes/vehicle unexpected error: %s\n%s", e, traceback.format_exc())
         return {"error": str(e)}
+
+
+# ============================================================================
+# General region analysis endpoint
+# ============================================================================
+@router.post("/analyze-region")
+async def analyze_region(image: UploadFile = File(...)):
+    """
+    Analyze ANY user-selected region with Qwen2.5-VL — general purpose.
+    Returns a free-form description and dynamic attributes for whatever
+    is visible in the cropped region (people, vehicles, text, objects, etc.).
+    """
+    t0 = time.perf_counter()
+    try:
+        raw = await image.read()
+        arr = np.frombuffer(raw, dtype=np.uint8)
+        cv2_img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if cv2_img is None:
+            return {"error": "Could not decode uploaded image"}
+
+        pil_img = Image.fromarray(cv2.cvtColor(cv2_img, cv2.COLOR_BGR2RGB))
+
+        model, processor = _get_vlm()
+        if model is not None:
+            try:
+                prompt_text = (
+                    "Analyze this selected region from a surveillance camera. "
+                    "Describe everything you see in detail. "
+                    "If there are people, describe them. "
+                    "If there are vehicles, identify them. "
+                    "If there is text, read it. "
+                    "Return JSON with 'description' and 'attributes' keys.\n\n"
+                    "Format:\n"
+                    '{"description": "detailed 2-4 sentence description of the region", '
+                    '"attributes": {...}}\n\n'
+                    "For 'attributes', include any of these that are relevant:\n"
+                    "- objects_detected (list of object types visible)\n"
+                    "- people_count (number of people visible)\n"
+                    "- people_description (brief description of each person)\n"
+                    "- vehicle_type, vehicle_color, vehicle_make_model (if vehicle visible)\n"
+                    "- text_visible (any text, signs, license plates you can read)\n"
+                    "- activity (what is happening in the scene)\n"
+                    "- lighting (daylight, nighttime, artificial, etc.)\n"
+                    "- environment (street, building, intersection, market, etc.)\n"
+                    "- any other notable features\n\n"
+                    "Rules:\n"
+                    "- ONLY describe what you can CLEARLY see. Do NOT guess.\n"
+                    "- Be specific about colors, positions, and quantities.\n"
+                    "- If you see text/numbers, transcribe them exactly."
+                )
+
+                messages = [{"role": "user", "content": [
+                    {"type": "image", "image": pil_img},
+                    {"type": "text", "text": prompt_text},
+                ]}]
+
+                text = processor.apply_chat_template(
+                    messages, tokenize=False, add_generation_prompt=True,
+                )
+                inputs = processor(
+                    text=[text], images=[pil_img], return_tensors="pt",
+                ).to(model.device)
+
+                with torch.no_grad():
+                    output = model.generate(
+                        **inputs, max_new_tokens=600, do_sample=False,
+                    )
+
+                decoded = processor.batch_decode(
+                    output[:, inputs["input_ids"].shape[1]:],
+                    skip_special_tokens=True,
+                )[0].strip()
+                logger.info("VLM region raw: %s", decoded)
+
+                data = _parse_vlm_json(decoded)
+                if data:
+                    description = data.get("description", "")
+                    attributes = data.get("attributes", data)
+                    if "description" not in data:
+                        description = ""
+                        attributes = data
+
+                    elapsed = (time.perf_counter() - t0) * 1000
+                    logger.info("attributes/analyze-region: %.0f ms (VLM)", elapsed)
+                    return _sanitize({
+                        "description": description,
+                        "attributes": attributes,
+                    })
+            except Exception as e:
+                logger.warning(
+                    "VLM region analysis failed: %s\n%s", e, traceback.format_exc(),
+                )
+
+        # Fallback: CLIP zero-shot description
+        try:
+            scene_prompts = [
+                "a street scene", "a building", "a vehicle",
+                "a person walking", "a market or bazaar", "an intersection",
+                "a parked vehicle", "a group of people", "an empty area",
+            ]
+            probs = _classify_zero_shot(pil_img, scene_prompts)
+            best_idx = int(np.argmax(probs))
+            elapsed = (time.perf_counter() - t0) * 1000
+            logger.info("attributes/analyze-region: %.0f ms (CLIP fallback)", elapsed)
+            return _sanitize({
+                "description": f"Scene appears to show: {scene_prompts[best_idx]}",
+                "attributes": {
+                    "scene_type": scene_prompts[best_idx],
+                    "confidence": round(float(probs[best_idx]), 4),
+                },
+            })
+        except Exception as e:
+            logger.warning("CLIP region fallback failed: %s", e)
+
+        return _sanitize({
+            "description": "Unable to analyze region — VLM unavailable",
+            "attributes": {},
+        })
+    except Exception as e:
+        logger.error(
+            "attributes/analyze-region unexpected error: %s\n%s",
+            e, traceback.format_exc(),
+        )
+        return {"error": str(e)}
