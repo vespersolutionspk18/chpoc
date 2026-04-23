@@ -12,18 +12,18 @@ from fastapi.responses import FileResponse, Response
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/live", tags=["live"])
 
-NVR_BASE = "rtsp://admin:cpo%407890@103.240.220.164:554/Streaming/Channels"
+NVR_BASE = "rtsp://admin:cpo@7890@103.240.220.164:554/Streaming/Channels"
 
 CAMERAS = {
-    "cctv_c": {"channel": "201", "name": "CCTV/C", "sub": "204"},
+  #  "cctv_c": {"channel": "201", "name": "CCTV/C", "sub": "204"},
     "camera_01": {"channel": "401", "name": "Camera 01", "sub": "402"},
-    "m_gate_01": {"channel": "501", "name": "M Gate 01", "sub": "502"},
-    "parking": {"channel": "701", "name": "Parking", "sub": "702"},
-    "camera_01b": {"channel": "801", "name": "Camera 01B", "sub": "802"},
-    "main_barrier": {"channel": "901", "name": "Main Barrier", "sub": "904"},
-    "gate_2": {"channel": "1401", "name": "Gate 2", "sub": "1404"},
-    "out_gate_2": {"channel": "1501", "name": "Out Gate 2", "sub": "1504"},
-    "sect_side": {"channel": "1601", "name": "Sect Side", "sub": "1604"},
+  #  "m_gate_01": {"channel": "501", "name": "M Gate 01", "sub": "502"},
+  #  "parking": {"channel": "701", "name": "Parking", "sub": "702"},
+  #  "camera_01b": {"channel": "801", "name": "Camera 01B", "sub": "802"},
+  #  "main_barrier": {"channel": "901", "name": "Main Barrier", "sub": "904"},
+  #  "gate_2": {"channel": "1401", "name": "Gate 2", "sub": "1404"},
+  #  "out_gate_2": {"channel": "1501", "name": "Out Gate 2", "sub": "1504"},
+  #  "sect_side": {"channel": "1601", "name": "Sect Side", "sub": "1604"},
 }
 
 HLS_DIR = "/tmp/hls"
